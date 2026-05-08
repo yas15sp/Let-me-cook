@@ -194,7 +194,7 @@ function ReviewScreen({ captures, elapsed, onShare, onDiscard }) {
   );
 }
 
-export default function CookScreen() {
+export default function CookScreen({ navigation }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState('idle'); // idle | session | review
   const [stage, setStage] = useState(0);
@@ -248,12 +248,23 @@ export default function CookScreen() {
 
   if (phase === 'idle') return <IdleScreen onStart={handleStart} />;
 
+  const handleShare = () => {
+    handleDiscard();
+    navigation.navigate('RankUp', {
+      fromRank: 'Gold Cook',
+      fromLevel: 'II',
+      toRank: 'Chef',
+      toLevel: 'I',
+      xpEarned: 240,
+    });
+  };
+
   if (phase === 'review') {
     return (
       <ReviewScreen
         captures={captures}
         elapsed={stopwatch.elapsed}
-        onShare={() => handleDiscard()}
+        onShare={handleShare}
         onDiscard={handleDiscard}
       />
     );
