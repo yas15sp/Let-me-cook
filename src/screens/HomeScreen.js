@@ -1,6 +1,7 @@
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, spacing, typography, borders } from '../theme';
 
@@ -11,7 +12,7 @@ const CARD_GAP = spacing.xs;
 const USER = {
   username: 'yas15sp',
   level: 12,
-  rank: 'CHEF DE PARTIE',
+  rank: 'Chef',
   xp: 3400,
   xpToNext: 5000,
 };
@@ -25,30 +26,33 @@ const WEEKLY_EVENT = {
 };
 
 const POSTS = [
-  { id: '1', username: 'chef_miguel', rank: 'SOUS CHEF', level: 28, dish: 'Spicy Korean Tacos', votes: 1204, timeAgo: '2h ago' },
-  { id: '2', username: 'firepit_anna', rank: 'HEAD CHEF', level: 41, dish: 'Smoked BBQ Brisket', votes: 987, timeAgo: '4h ago' },
-  { id: '3', username: 'pastry_kim', rank: 'CHEF DE PARTIE', level: 19, dish: 'Miso Caramel Croissant', votes: 743, timeAgo: '6h ago' },
-  { id: '4', username: 'ramen_lord', rank: 'SOUS CHEF', level: 33, dish: 'Tonkotsu Ramen XL', votes: 612, timeAgo: '8h ago' },
-  { id: '5', username: 'grill_queen', rank: 'COMMIS CHEF', level: 8, dish: 'Jerk Chicken Skewers', votes: 441, timeAgo: '11h ago' },
+  { id: '1', username: 'chef_miguel',  rank: 'Diamond Cook', level: 28, dish: 'Spicy Korean Tacos',      votes: 1204, timeAgo: '2h ago',  accentColor: '#88CCFF' },
+  { id: '2', username: 'firepit_anna', rank: 'Master Chef',  level: 41, dish: 'Smoked BBQ Brisket',      votes: 987,  timeAgo: '4h ago',  accentColor: '#FF6B00' },
+  { id: '3', username: 'pastry_kim',   rank: 'Chef',         level: 19, dish: 'Miso Caramel Croissant',  votes: 743,  timeAgo: '6h ago',  accentColor: '#E8001C' },
+  { id: '4', username: 'ramen_lord',   rank: 'Emerald Cook', level: 33, dish: 'Tonkotsu Ramen XL',       votes: 612,  timeAgo: '8h ago',  accentColor: '#00C47A' },
+  { id: '5', username: 'grill_queen',  rank: 'Gold Cook',    level: 8,  dish: 'Jerk Chicken Skewers',    votes: 441,  timeAgo: '11h ago', accentColor: '#FFB800' },
 ];
 
 const RANK_COLORS = {
-  'KITCHEN HAND': '#555555',
-  'COMMIS CHEF': '#AAAAAA',
-  'CHEF DE PARTIE': colors.accent,
-  'SOUS CHEF': colors.primary,
-  'HEAD CHEF': colors.gold,
-  'EXECUTIVE CHEF': colors.success,
+  'Gold Cook':        '#FFB800',
+  'Emerald Cook':     '#00C47A',
+  'Diamond Cook':     '#88CCFF',
+  'Chef':             '#E8001C',
+  'Exec Chef':        '#A855F7',
+  'Master Chef':      '#FF6B00',
+  'World Class Chef': '#E8C840',
 };
+
+// ─── Countdown hook ────────────────────────────────────────────────────────────
 
 function useCountdown(targetDate) {
   const calc = () => {
     const diff = Math.max(0, targetDate - Date.now());
     return {
-      days: Math.floor(diff / (1000 * 60 * 60 * 24)),
+      days:  Math.floor(diff / (1000 * 60 * 60 * 24)),
       hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
-      mins: Math.floor((diff / (1000 * 60)) % 60),
-      secs: Math.floor((diff / 1000) % 60),
+      mins:  Math.floor((diff / (1000 * 60)) % 60),
+      secs:  Math.floor((diff / 1000) % 60),
     };
   };
   const [time, setTime] = useState(calc);
@@ -59,34 +63,78 @@ function useCountdown(targetDate) {
   return time;
 }
 
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// ─── TikTok-style feed card ────────────────────────────────────────────────────
 
 function TikTokCard({ item, index }) {
   const isTop = index === 0;
   const rankColor = RANK_COLORS[item.rank] || colors.accent;
+  const [voted, setVoted] = useState(false);
+  const [voteCount, setVoteCount] = useState(item.votes);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  function handleVote() {
+    const next = !voted;
+    setVoted(next);
+    setVoteCount(c => c + (next ? 1 : -1));
+    Animated.sequence([
+      Animated.timing(scaleAnim, { toValue: 1.35, duration: 120, useNativeDriver: true }),
+      Animated.spring(scaleAnim, { toValue: 1, friction: 4, useNativeDriver: true }),
+    ]).start();
+  }
+
+  const stripeColor = item.accentColor || rankColor;
 
   return (
     <View style={[styles.tikTokCard, { height: CARD_HEIGHT }, isTop && styles.tikTokCardTop]}>
-      {/* Full bleed image placeholder */}
-      <View style={styles.tikTokImage}>
-        <Ionicons name="restaurant" size={72} color="#1e1e1e" />
+      {/* Background image placeholder with diagonal stripes */}
+      <View style={[styles.tikTokImage, { backgroundColor: '#0a0a0a' }]}>
+        <View style={styles.tikTokStripes} pointerEvents="none">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <View key={i} style={[styles.tikTokStripe, { backgroundColor: stripeColor, opacity: isTop ? 0.07 : 0.04 }]} />
+          ))}
+        </View>
+        <Ionicons name="restaurant" size={64} color={isTop ? stripeColor : '#1a1a1a'} style={{ opacity: isTop ? 0.3 : 1 }} />
+        {/* 3-clip indicator */}
+        <View style={styles.clipRow}>
+          {[0, 1, 2].map(i => (
+            <View key={i} style={[styles.clipFrame, i === 1 && { borderColor: stripeColor }]}>
+              <Ionicons name="camera" size={9} color={i === 1 ? stripeColor : '#333'} />
+            </View>
+          ))}
+        </View>
       </View>
 
-      {/* Top-left rank badge */}
-      <View style={[styles.tikTokRankBadge, isTop && { backgroundColor: colors.gold, borderColor: colors.gold }]}>
-        <Text style={[styles.tikTokRankNum, isTop && { color: colors.background }]}>#{index + 1}</Text>
+      {/* Position badge */}
+      <View style={[styles.positionBadge, isTop && { backgroundColor: colors.gold, borderColor: colors.gold }]}>
+        <Text style={[styles.positionText, isTop && { color: colors.background }]}>#{index + 1}</Text>
       </View>
 
-      {/* Right-side action column */}
+      {/* Right-side actions */}
       <View style={styles.tikTokActions}>
-        <TouchableOpacity style={[styles.tikTokVoteBtn, isTop && styles.tikTokVoteBtnTop]}>
-          <Ionicons name="flame" size={26} color={isTop ? colors.background : colors.primary} />
+        <TouchableOpacity onPress={handleVote} activeOpacity={0.8}>
+          <Animated.View
+            style={[
+              styles.tikTokVoteBtn,
+              voted && styles.tikTokVoteBtnActive,
+              isTop && !voted && styles.tikTokVoteBtnTop,
+              { transform: [{ scale: scaleAnim }] },
+            ]}
+          >
+            <Ionicons
+              name={voted ? 'flame' : 'flame-outline'}
+              size={26}
+              color={voted ? colors.white : isTop ? colors.background : colors.primary}
+            />
+          </Animated.View>
         </TouchableOpacity>
-        <Text style={[styles.tikTokVoteCount, isTop && { color: colors.gold }]}>
-          {item.votes.toLocaleString()}
+        <Text style={[styles.tikTokVoteCount, voted && { color: colors.primary }, isTop && !voted && { color: colors.gold }]}>
+          {voteCount.toLocaleString()}
         </Text>
+        <TouchableOpacity style={styles.tikTokShareBtn} activeOpacity={0.8}>
+          <Ionicons name="share-outline" size={20} color={colors.inactive} />
+        </TouchableOpacity>
       </View>
 
       {/* Bottom info overlay */}
@@ -107,6 +155,8 @@ function TikTokCard({ item, index }) {
   );
 }
 
+// ─── Main screen ───────────────────────────────────────────────────────────────
+
 export default function HomeScreen() {
   const countdown = useCountdown(WEEKLY_EVENT.endsAt);
   const xpPct = (USER.xp / USER.xpToNext) * 100;
@@ -120,14 +170,6 @@ export default function HomeScreen() {
 
   const ListHeader = (
     <View onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
-      {/* App bar */}
-      <View style={styles.appHeader}>
-        <Text style={styles.appTitle}>LET ME COOK</Text>
-        <TouchableOpacity style={styles.notifBtn}>
-          <Ionicons name="notifications" size={22} color={colors.accent} />
-        </TouchableOpacity>
-      </View>
-
       {/* Player card */}
       <View style={styles.playerCard}>
         <View style={styles.playerTop}>
@@ -141,9 +183,13 @@ export default function HomeScreen() {
               <Text style={[styles.rankText, { color: rankColor }]}>{USER.rank}</Text>
             </View>
           </View>
+          <View style={styles.streakPill}>
+            <Ionicons name="flame" size={14} color={colors.gold} />
+            <Text style={styles.streakText}>6</Text>
+          </View>
         </View>
         <View style={styles.xpRow}>
-          <Text style={styles.xpLabel}>XP</Text>
+          <Text style={styles.xpLabel}>XP TO {USER.rank === 'Chef' ? 'EXEC CHEF' : 'NEXT RANK'}</Text>
           <Text style={styles.xpNums}>{USER.xp.toLocaleString()} / {USER.xpToNext.toLocaleString()}</Text>
         </View>
         <View style={styles.xpTrack}>
@@ -166,12 +212,13 @@ export default function HomeScreen() {
         <Text style={styles.eventTitle}>{WEEKLY_EVENT.title}</Text>
         <Text style={styles.eventSubtitle}>{WEEKLY_EVENT.subtitle}</Text>
 
+        {/* Countdown — boxes stacked, separators between them */}
         <View style={styles.countdownRow}>
           {[
-            { val: countdown.days, label: 'DAYS' },
-            { val: countdown.hours, label: 'HRS' },
-            { val: countdown.mins, label: 'MIN' },
-            { val: countdown.secs, label: 'SEC' },
+            { val: countdown.days,  label: 'DAYS' },
+            { val: countdown.hours, label: 'HRS'  },
+            { val: countdown.mins,  label: 'MIN'  },
+            { val: countdown.secs,  label: 'SEC'  },
           ].map(({ val, label }, i) => (
             <View key={label} style={styles.countdownGroup}>
               <View style={styles.countdownBox}>
@@ -187,7 +234,7 @@ export default function HomeScreen() {
           <Ionicons name="trophy" size={14} color={colors.gold} />
           <Text style={styles.prizeText}>{WEEKLY_EVENT.prize}</Text>
         </View>
-        <TouchableOpacity style={styles.joinBtn}>
+        <TouchableOpacity style={styles.joinBtn} activeOpacity={0.85}>
           <Text style={styles.joinBtnText}>JOIN EVENT</Text>
         </TouchableOpacity>
       </View>
@@ -196,12 +243,22 @@ export default function HomeScreen() {
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>TRENDING</Text>
         <View style={styles.sectionLine} />
+        <Text style={styles.sectionCount}>{POSTS.length}</Text>
       </View>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      {/* Top bar — outside scroll so it stays fixed */}
+      <View style={styles.appHeader}>
+        <Text style={styles.appTitle}>LET ME COOK!</Text>
+        <TouchableOpacity style={styles.notifBtn} activeOpacity={0.8}>
+          <Ionicons name="notifications" size={20} color={colors.white} />
+          <View style={styles.notifDot} />
+        </TouchableOpacity>
+      </View>
+
       <FlatList
         data={POSTS}
         keyExtractor={item => item.id}
@@ -216,28 +273,42 @@ export default function HomeScreen() {
   );
 }
 
+// ─── Styles ────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  content: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
 
   appHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.md,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: borders.medium,
+    borderBottomColor: '#000',
   },
   appTitle: {
     color: colors.white,
-    fontSize: typography.fontSize.xl,
+    fontSize: typography.fontSize.xxl,
     fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
+    letterSpacing: typography.letterSpacing.wide,
+    textTransform: 'uppercase',
   },
   notifBtn: {
-    width: 38, height: 38,
-    borderWidth: borders.thin, borderColor: colors.border,
-    backgroundColor: colors.surface,
+    width: 36, height: 36,
+    borderWidth: borders.thin, borderColor: 'rgba(255,255,255,0.3)',
     alignItems: 'center', justifyContent: 'center',
   },
+  notifDot: {
+    position: 'absolute',
+    top: 6, right: 6,
+    width: 7, height: 7, borderRadius: 4,
+    backgroundColor: colors.accent,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+
+  content: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
 
   // Player card
   playerCard: {
@@ -245,32 +316,38 @@ const styles = StyleSheet.create({
     borderWidth: borders.medium, borderColor: colors.border,
     padding: spacing.md, marginBottom: spacing.md,
   },
-  playerTop: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md },
+  playerTop: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md, gap: spacing.sm },
   levelBadge: {
     backgroundColor: colors.primary,
-    borderWidth: borders.thin, borderColor: colors.border,
+    borderWidth: borders.thin, borderColor: '#000',
     paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
-    alignItems: 'center', marginRight: spacing.md, minWidth: 52,
+    alignItems: 'center', minWidth: 52,
   },
   levelLabel: {
-    color: colors.white, fontSize: typography.fontSize.xs,
+    color: 'rgba(255,255,255,0.7)', fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider,
   },
   levelNum: {
     color: colors.white, fontSize: typography.fontSize.xxl,
     fontWeight: typography.fontWeight.black, lineHeight: typography.fontSize.xxl + 4,
   },
-  playerInfo: { flex: 1 },
+  playerInfo: { flex: 1, gap: spacing.xs },
   playerName: {
     color: colors.white, fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wide,
-    marginBottom: spacing.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide,
   },
   rankBadge: {
     borderWidth: borders.thin, paddingHorizontal: spacing.sm,
     paddingVertical: 2, alignSelf: 'flex-start',
   },
-  rankText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
+  rankText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  streakPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#1a1500',
+    borderWidth: borders.thin, borderColor: colors.gold,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+  },
+  streakText: { color: colors.gold, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black },
   xpRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.xs },
   xpLabel: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
   xpNums: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
@@ -289,7 +366,7 @@ const styles = StyleSheet.create({
   },
   eventHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
   eventBadge: { backgroundColor: colors.primary, paddingHorizontal: spacing.sm, paddingVertical: 3 },
-  eventBadgeText: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
+  eventBadgeText: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
   participantsBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     borderWidth: borders.thin, borderColor: colors.border,
@@ -298,29 +375,33 @@ const styles = StyleSheet.create({
   participantsText: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
   eventTitle: {
     color: colors.white, fontSize: typography.fontSize.xl,
-    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider, marginBottom: spacing.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.tight, marginBottom: spacing.xs,
   },
   eventSubtitle: { color: colors.inactive, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, marginBottom: spacing.md, lineHeight: 18 },
-  countdownRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.md, gap: spacing.xs },
-  countdownGroup: { alignItems: 'center', flexDirection: 'row', gap: spacing.xs },
+
+  // Countdown
+  countdownRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing.md },
+  countdownGroup: { flex: 1, alignItems: 'center', flexDirection: 'column' },
   countdownBox: {
     backgroundColor: colors.background,
     borderWidth: borders.thin, borderColor: colors.border,
-    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
-    minWidth: 44, alignItems: 'center',
+    width: '90%', alignItems: 'center', paddingVertical: spacing.xs,
+    marginBottom: 4,
   },
   countdownNum: { color: colors.accent, fontSize: typography.fontSize.xl, fontWeight: typography.fontWeight.black, fontVariant: ['tabular-nums'] },
-  countdownLabel: { color: colors.inactive, fontSize: typography.fontSize.xs - 1, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider, marginTop: 2 },
-  countdownSep: { color: colors.primary, fontSize: typography.fontSize.xl, fontWeight: typography.fontWeight.black, marginTop: -2 },
+  countdownLabel: { color: colors.inactive, fontSize: typography.fontSize.xs - 1, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
+  countdownSep: { position: 'absolute', right: 0, top: 4, color: colors.primary, fontSize: typography.fontSize.xl, fontWeight: typography.fontWeight.black, lineHeight: typography.fontSize.xl + 4 },
+
   prizeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginBottom: spacing.md },
   prizeText: { color: colors.gold, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wide },
-  joinBtn: { backgroundColor: colors.primary, borderWidth: borders.thin, borderColor: colors.border, paddingVertical: spacing.sm, alignItems: 'center' },
+  joinBtn: { backgroundColor: colors.primary, borderWidth: borders.thin, borderColor: '#000', paddingVertical: spacing.sm + 2, alignItems: 'center' },
   joinBtnText: { color: colors.white, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
 
   // Section
   sectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm, gap: spacing.sm },
   sectionTitle: { color: colors.white, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
   sectionLine: { flex: 1, height: 2, backgroundColor: colors.border },
+  sectionCount: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
 
   // TikTok cards
   tikTokCard: {
@@ -338,11 +419,35 @@ const styles = StyleSheet.create({
   },
   tikTokImage: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0d0d0d',
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  tikTokRankBadge: {
+  tikTokStripes: {
+    position: 'absolute',
+    top: -40, left: -40, right: -40, bottom: -40,
+    flexDirection: 'row',
+    gap: 18,
+    transform: [{ rotate: '-20deg' }],
+  },
+  tikTokStripe: {
+    width: 20,
+    flex: 1,
+  },
+  clipRow: {
+    position: 'absolute',
+    top: spacing.md,
+    right: spacing.md,
+    flexDirection: 'row',
+    gap: 3,
+  },
+  clipFrame: {
+    width: 22, height: 22,
+    backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  positionBadge: {
     position: 'absolute',
     top: spacing.md,
     left: spacing.md,
@@ -352,7 +457,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
   },
-  tikTokRankNum: {
+  positionText: {
     color: colors.white,
     fontSize: typography.fontSize.md,
     fontWeight: typography.fontWeight.black,
@@ -363,13 +468,17 @@ const styles = StyleSheet.create({
     right: spacing.md,
     bottom: 90,
     alignItems: 'center',
-    gap: spacing.xs,
+    gap: spacing.sm,
   },
   tikTokVoteBtn: {
-    width: 48, height: 48,
+    width: 50, height: 50,
     borderWidth: borders.medium, borderColor: colors.primary,
     backgroundColor: colors.surface,
     alignItems: 'center', justifyContent: 'center',
+  },
+  tikTokVoteBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   tikTokVoteBtnTop: {
     backgroundColor: colors.primary,
@@ -379,10 +488,16 @@ const styles = StyleSheet.create({
     fontSize: typography.fontSize.sm,
     fontWeight: typography.fontWeight.black,
   },
+  tikTokShareBtn: {
+    width: 36, height: 36,
+    borderWidth: borders.thin, borderColor: colors.border,
+    backgroundColor: 'rgba(17,17,17,0.8)',
+    alignItems: 'center', justifyContent: 'center',
+  },
   tikTokOverlay: {
     position: 'absolute',
     bottom: 0, left: 0, right: 0,
-    backgroundColor: 'rgba(10,10,10,0.92)',
+    backgroundColor: 'rgba(8,8,8,0.93)',
     borderTopWidth: borders.thin,
     borderTopColor: colors.border,
     padding: spacing.md,
@@ -420,7 +535,7 @@ const styles = StyleSheet.create({
     letterSpacing: typography.letterSpacing.wider,
   },
   tikTokTime: {
-    color: '#333', fontSize: typography.fontSize.xs,
+    color: '#444', fontSize: typography.fontSize.xs,
     fontWeight: typography.fontWeight.bold, marginLeft: 'auto',
   },
 });

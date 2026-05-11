@@ -9,8 +9,8 @@ const { width: W } = Dimensions.get('window');
 const USER = {
   username: 'yas15sp',
   level: 12,
-  rank: 'CHEF DE PARTIE',
-  nextRank: 'SOUS CHEF',
+  rank: 'Chef',
+  nextRank: 'Exec Chef',
   xp: 3400,
   xpToNext: 5000,
   dishesCooked: 47,
@@ -20,12 +20,13 @@ const USER = {
 };
 
 const RANKS = [
-  { name: 'KITCHEN HAND', color: '#555555', minLevel: 1 },
-  { name: 'COMMIS CHEF',  color: '#AAAAAA', minLevel: 5 },
-  { name: 'CHEF DE PARTIE', color: colors.accent, minLevel: 10 },
-  { name: 'SOUS CHEF',    color: colors.primary, minLevel: 20 },
-  { name: 'HEAD CHEF',    color: colors.gold,    minLevel: 35 },
-  { name: 'EXECUTIVE CHEF', color: colors.success, minLevel: 50 },
+  { name: 'Gold Cook',        color: '#FFB800', tier: 'I–III'  },
+  { name: 'Emerald Cook',     color: '#00C47A', tier: 'I–III'  },
+  { name: 'Diamond Cook',     color: '#88CCFF', tier: 'I–III'  },
+  { name: 'Chef',             color: '#E8001C', tier: 'I–III'  },
+  { name: 'Exec Chef',        color: '#A855F7', tier: 'I–III'  },
+  { name: 'Master Chef',      color: '#FF6B00', tier: 'I–III'  },
+  { name: 'World Class Chef', color: '#E8C840', tier: 'I–III'  },
 ];
 
 const ACHIEVEMENTS = [
@@ -60,10 +61,13 @@ const RANK_COLORS = RANKS.reduce((acc, r) => ({ ...acc, [r.name]: r.color }), {}
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
-function StatBox({ value, label, accent }) {
+function StatBox({ value, label, accent, streak }) {
   return (
     <View style={styles.statBox}>
-      <Text style={[styles.statValue, accent && { color: accent }]}>{value}</Text>
+      <View style={styles.statValueRow}>
+        <Text style={[styles.statValue, accent && { color: accent }]}>{value}</Text>
+        {streak && <Ionicons name="flame" size={14} color={colors.gold} />}
+      </View>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
@@ -89,7 +93,7 @@ function RankLadder({ currentRank }) {
               <Text style={[styles.rankLadderName, { color: done || active ? r.color : colors.inactive }]}>
                 {r.name}
               </Text>
-              <Text style={styles.rankLadderLevel}>LV {r.minLevel}+</Text>
+              <Text style={styles.rankLadderLevel}>TIER {r.tier}</Text>
             </View>
             {active && (
               <View style={[styles.rankCurrentChip, { borderColor: r.color }]}>
@@ -130,8 +134,13 @@ function MealCard({ item }) {
   return (
     <View style={[styles.mealCard, podium && styles.mealCardPodium, isFirst && styles.mealCardFirst]}>
       {/* Image area with 3-stage clip strip */}
-      <View style={styles.mealImage}>
-        <Ionicons name="restaurant" size={32} color="#1a1a1a" />
+      <View style={[styles.mealImage, { backgroundColor: isFirst ? '#1a1500' : podium ? '#0f0f0f' : '#0d0d0d' }]}>
+        <View style={styles.mealImageStripes} pointerEvents="none">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <View key={i} style={[styles.mealImageStripe, { opacity: isFirst ? 0.12 : 0.05 }]} />
+          ))}
+        </View>
+        <Ionicons name="restaurant" size={28} color={isFirst ? colors.gold : '#222'} />
         {/* Mini clip strip overlay */}
         <View style={styles.mealClipStrip}>
           {[0, 1, 2].map(i => (
@@ -195,9 +204,9 @@ export default function ProfileScreen() {
 
         {/* App bar */}
         <View style={styles.appBar}>
-          <Text style={styles.appBarTitle}>PROFILE</Text>
+          <Text style={styles.appBarTitle}>Profile</Text>
           <TouchableOpacity style={styles.settingsBtn}>
-            <Ionicons name="settings-outline" size={20} color={colors.inactive} />
+            <Ionicons name="settings-outline" size={20} color={colors.white} />
           </TouchableOpacity>
         </View>
 
@@ -249,7 +258,7 @@ export default function ProfileScreen() {
           <View style={styles.statDivider} />
           <StatBox value={USER.totalVotes.toLocaleString()} label="VOTES" accent={colors.primary} />
           <View style={styles.statDivider} />
-          <StatBox value={`${USER.streak}🔥`} label="STREAK" accent={colors.gold} />
+          <StatBox value={`${USER.streak}`} label="STREAK" accent={colors.gold} streak />
           <View style={styles.statDivider} />
           <StatBox value={`#${USER.globalRank}`} label="RANK" accent={colors.accent} />
         </View>
@@ -347,11 +356,11 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
-  scroll: { paddingHorizontal: spacing.md, paddingBottom: spacing.xl },
+  scroll: { paddingHorizontal: spacing.md, paddingBottom: spacing.xl, paddingTop: 0 },
 
-  appBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md, paddingTop: spacing.sm },
-  appBarTitle: { color: colors.white, fontSize: typography.fontSize.xl, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
-  settingsBtn: { width: 38, height: 38, borderWidth: borders.thin, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
+  appBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: colors.primary, paddingTop: spacing.md, paddingBottom: spacing.md, paddingHorizontal: spacing.md, borderBottomWidth: borders.medium, borderBottomColor: '#000', marginHorizontal: -spacing.md, marginBottom: spacing.md },
+  appBarTitle: { color: colors.white, fontSize: typography.fontSize.xxl, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide, textTransform: 'uppercase' },
+  settingsBtn: { width: 36, height: 36, borderWidth: borders.thin, borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
 
   // Hero card
   heroCard: { backgroundColor: colors.surface, borderWidth: borders.medium, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.sm },
@@ -380,6 +389,7 @@ const styles = StyleSheet.create({
   // Stats
   statsGrid: { flexDirection: 'row', borderWidth: borders.thin, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.md },
   statBox: { flex: 1, alignItems: 'center', paddingVertical: spacing.md, gap: 2 },
+  statValueRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   statValue: { color: colors.white, fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.black },
   statLabel: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
   statDivider: { width: borders.thin, backgroundColor: colors.border },
@@ -432,7 +442,9 @@ const styles = StyleSheet.create({
   mealCard: { backgroundColor: colors.surface, borderWidth: borders.thin, borderColor: colors.border, overflow: 'hidden', marginBottom: 0 },
   mealCardPodium: { borderColor: colors.inactive },
   mealCardFirst: { borderColor: colors.gold, borderWidth: borders.medium },
-  mealImage: { height: MEAL_CARD_W * 0.85, backgroundColor: '#0d0d0d', alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  mealImage: { height: MEAL_CARD_W * 0.85, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' },
+  mealImageStripes: { position: 'absolute', top: -10, left: -10, right: -10, bottom: -10, flexDirection: 'row', gap: 10, transform: [{ rotate: '-25deg' }] },
+  mealImageStripe: { width: 12, flex: 1, backgroundColor: colors.white },
   mealClipStrip: { position: 'absolute', top: spacing.xs, right: spacing.xs, flexDirection: 'column', gap: 2 },
   mealClipFrame: { width: 18, height: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
   mealClipFrameMid: { borderColor: colors.accent },
