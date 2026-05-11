@@ -1,21 +1,17 @@
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Dimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
+import { getProfile, getFeed, voteCook, unvoteCook, timeAgo } from '../lib/api';
 import { colors, spacing, typography, borders } from '../theme';
 
 const WINDOW = Dimensions.get('window');
 const CARD_HEIGHT = WINDOW.height * 0.68;
 const CARD_GAP = spacing.xs;
 
-const USER = {
-  username: 'yas15sp',
-  level: 12,
-  rank: 'Chef',
-  xp: 3400,
-  xpToNext: 5000,
-};
+const XP_PER_RANK = 5000;
 
 const WEEKLY_EVENT = {
   title: 'STREET FOOD SHOWDOWN',
@@ -24,14 +20,6 @@ const WEEKLY_EVENT = {
   participants: 248,
   endsAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000 + 7 * 3600 * 1000 + 44 * 60 * 1000),
 };
-
-const POSTS = [
-  { id: '1', username: 'chef_miguel',  rank: 'Diamond Cook', level: 28, dish: 'Spicy Korean Tacos',      votes: 1204, timeAgo: '2h ago',  accentColor: '#88CCFF' },
-  { id: '2', username: 'firepit_anna', rank: 'Master Chef',  level: 41, dish: 'Smoked BBQ Brisket',      votes: 987,  timeAgo: '4h ago',  accentColor: '#FF6B00' },
-  { id: '3', username: 'pastry_kim',   rank: 'Chef',         level: 19, dish: 'Miso Caramel Croissant',  votes: 743,  timeAgo: '6h ago',  accentColor: '#E8001C' },
-  { id: '4', username: 'ramen_lord',   rank: 'Emerald Cook', level: 33, dish: 'Tonkotsu Ramen XL',       votes: 612,  timeAgo: '8h ago',  accentColor: '#00C47A' },
-  { id: '5', username: 'grill_queen',  rank: 'Gold Cook',    level: 8,  dish: 'Jerk Chicken Skewers',    votes: 441,  timeAgo: '11h ago', accentColor: '#FFB800' },
-];
 
 const RANK_COLORS = {
   'Gold Cook':        '#FFB800',
@@ -67,14 +55,16 @@ function pad(n) { return String(n).padStart(2, '0'); }
 
 // ─── TikTok-style feed card ────────────────────────────────────────────────────
 
-function TikTokCard({ item, index }) {
+function TikTokCard({ item, index, userId }) {
   const isTop = index === 0;
-  const rankColor = RANK_COLORS[item.rank] || colors.accent;
-  const [voted, setVoted] = useState(false);
-  const [voteCount, setVoteCount] = useState(item.votes);
+  const profile = item.profiles || {};
+  const rankColor = RANK_COLORS[profile.rank] || colors.accent;
+  const initiallyVoted = (item.votes || []).some(v => v.user_id === userId);
+  const [voted, setVoted] = useState(initiallyVoted);
+  const [voteCount, setVoteCount] = useState((item.votes || []).length);
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  function handleVote() {
+  async function handleVote() {
     const next = !voted;
     setVoted(next);
     setVoteCount(c => c + (next ? 1 : -1));
@@ -82,9 +72,17 @@ function TikTokCard({ item, index }) {
       Animated.timing(scaleAnim, { toValue: 1.35, duration: 120, useNativeDriver: true }),
       Animated.spring(scaleAnim, { toValue: 1, friction: 4, useNativeDriver: true }),
     ]).start();
+    try {
+      if (next) await voteCook(item.id, userId);
+      else await unvoteCook(item.id, userId);
+    } catch {
+      // revert on error
+      setVoted(!next);
+      setVoteCount(c => c + (next ? -1 : 1));
+    }
   }
 
-  const stripeColor = item.accentColor || rankColor;
+  const stripeColor = rankColor;
 
   return (
     <View style={[styles.tikTokCard, { height: CARD_HEIGHT }, isTop && styles.tikTokCardTop]}>
@@ -139,16 +137,16 @@ function TikTokCard({ item, index }) {
 
       {/* Bottom info overlay */}
       <View style={styles.tikTokOverlay}>
-        <Text style={styles.tikTokDish} numberOfLines={1}>{item.dish}</Text>
+        <Text style={styles.tikTokDish} numberOfLines={1}>{item.dish_name}</Text>
         <View style={styles.tikTokUserRow}>
           <View style={[styles.tikTokLevelDot, { backgroundColor: rankColor }]}>
-            <Text style={styles.tikTokLevelDotText}>{item.level}</Text>
+            <Text style={styles.tikTokLevelDotText}>{profile.level}</Text>
           </View>
-          <Text style={styles.tikTokUsername}>@{item.username}</Text>
+          <Text style={styles.tikTokUsername}>@{profile.username}</Text>
           <View style={[styles.tikTokRankChip, { borderColor: rankColor }]}>
-            <Text style={[styles.tikTokRankChipText, { color: rankColor }]}>{item.rank}</Text>
+            <Text style={[styles.tikTokRankChipText, { color: rankColor }]}>{profile.rank}</Text>
           </View>
-          <Text style={styles.tikTokTime}>{item.timeAgo}</Text>
+          <Text style={styles.tikTokTime}>{timeAgo(item.created_at)}</Text>
         </View>
       </View>
     </View>
@@ -159,13 +157,31 @@ function TikTokCard({ item, index }) {
 
 export default function HomeScreen() {
   const countdown = useCountdown(WEEKLY_EVENT.endsAt);
-  const xpPct = (USER.xp / USER.xpToNext) * 100;
-  const rankColor = RANK_COLORS[USER.rank] || colors.accent;
   const [headerHeight, setHeaderHeight] = useState(0);
+  const [profile, setProfile] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) return;
+      const uid = session.user.id;
+      setUserId(uid);
+      Promise.all([getProfile(uid), getFeed()]).then(([prof, feed]) => {
+        setProfile(prof);
+        setPosts(feed);
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    });
+  }, []);
+
+  const xpPct = profile ? Math.min((profile.xp / XP_PER_RANK) * 100, 100) : 0;
+  const rankColor = RANK_COLORS[profile?.rank] || colors.accent;
 
   const snapOffsets = useMemo(
-    () => POSTS.map((_, i) => headerHeight + i * (CARD_HEIGHT + CARD_GAP)),
-    [headerHeight],
+    () => posts.map((_, i) => headerHeight + i * (CARD_HEIGHT + CARD_GAP)),
+    [headerHeight, posts],
   );
 
   const ListHeader = (
@@ -175,22 +191,22 @@ export default function HomeScreen() {
         <View style={styles.playerTop}>
           <View style={styles.levelBadge}>
             <Text style={styles.levelLabel}>LVL</Text>
-            <Text style={styles.levelNum}>{USER.level}</Text>
+            <Text style={styles.levelNum}>{profile?.level ?? 1}</Text>
           </View>
           <View style={styles.playerInfo}>
-            <Text style={styles.playerName}>{USER.username}</Text>
+            <Text style={styles.playerName}>{profile?.username ?? '...'}</Text>
             <View style={[styles.rankBadge, { borderColor: rankColor }]}>
-              <Text style={[styles.rankText, { color: rankColor }]}>{USER.rank}</Text>
+              <Text style={[styles.rankText, { color: rankColor }]}>{profile?.rank ?? '...'}</Text>
             </View>
           </View>
           <View style={styles.streakPill}>
             <Ionicons name="flame" size={14} color={colors.gold} />
-            <Text style={styles.streakText}>6</Text>
+            <Text style={styles.streakText}>{profile?.streak ?? 0}</Text>
           </View>
         </View>
         <View style={styles.xpRow}>
-          <Text style={styles.xpLabel}>XP TO {USER.rank === 'Chef' ? 'EXEC CHEF' : 'NEXT RANK'}</Text>
-          <Text style={styles.xpNums}>{USER.xp.toLocaleString()} / {USER.xpToNext.toLocaleString()}</Text>
+          <Text style={styles.xpLabel}>XP TO NEXT RANK</Text>
+          <Text style={styles.xpNums}>{(profile?.xp ?? 0).toLocaleString()} / {XP_PER_RANK.toLocaleString()}</Text>
         </View>
         <View style={styles.xpTrack}>
           <View style={[styles.xpFill, { width: `${xpPct}%` }]} />
@@ -243,7 +259,7 @@ export default function HomeScreen() {
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>TRENDING</Text>
         <View style={styles.sectionLine} />
-        <Text style={styles.sectionCount}>{POSTS.length}</Text>
+        <Text style={styles.sectionCount}>{posts.length}</Text>
       </View>
     </View>
   );
@@ -260,10 +276,21 @@ export default function HomeScreen() {
       </View>
 
       <FlatList
-        data={POSTS}
+        data={posts}
         keyExtractor={item => item.id}
         ListHeaderComponent={ListHeader}
-        renderItem={({ item, index }) => <TikTokCard item={item} index={index} />}
+        renderItem={({ item, index }) => (
+          <TikTokCard item={item} index={index} userId={userId} />
+        )}
+        ListEmptyComponent={
+          !loading && (
+            <View style={styles.emptyState}>
+              <Ionicons name="restaurant-outline" size={40} color={colors.border} />
+              <Text style={styles.emptyTitle}>NO COOKS YET</Text>
+              <Text style={styles.emptySubtitle}>Be the first to post a cook!</Text>
+            </View>
+          )
+        }
         snapToOffsets={snapOffsets}
         decelerationRate="fast"
         showsVerticalScrollIndicator={false}
@@ -309,6 +336,9 @@ const styles = StyleSheet.create({
   },
 
   content: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
+  emptyState: { alignItems: 'center', paddingVertical: spacing.xxl * 2, gap: spacing.sm },
+  emptyTitle: { color: colors.border, fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  emptySubtitle: { color: colors.inactive, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
 
   // Player card
   playerCard: {

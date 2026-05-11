@@ -115,3 +115,9 @@ $$ language plpgsql security definer;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- XP increment function (call after submitting a cook)
+create or replace function public.increment_xp(user_id uuid, amount integer)
+returns void as $$
+  update public.profiles set xp = xp + amount where id = user_id;
+$$ language sql security definer;
