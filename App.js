@@ -16,7 +16,7 @@ export default function App() {
     supabase.auth.getSession().then(async ({ data: { session: s } }) => {
       setSession(s);
       if (s) {
-        const done = await AsyncStorage.getItem('onboarding_complete');
+        const done = await AsyncStorage.getItem(`onboarding_complete_${s.user.id}`);
         setShowOnboarding(done !== 'true');
       }
       setReady(true);
@@ -26,7 +26,7 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
       setSession(s);
       if (s) {
-        const done = await AsyncStorage.getItem('onboarding_complete');
+        const done = await AsyncStorage.getItem(`onboarding_complete_${s.user.id}`);
         setShowOnboarding(done !== 'true');
       }
     });
@@ -45,7 +45,7 @@ export default function App() {
 
   if (showOnboarding) return (
     <>
-      <OnboardingFlow onComplete={() => setShowOnboarding(false)} />
+      <OnboardingFlow onComplete={() => setShowOnboarding(false)} userId={session.user.id} />
       <StatusBar style="light" />
     </>
   );

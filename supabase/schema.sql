@@ -1,5 +1,3 @@
--- Run this in your Supabase SQL Editor
-
 -- Users / profiles table
 create table public.profiles (
   id uuid references auth.users on delete cascade primary key,

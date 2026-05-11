@@ -314,7 +314,7 @@ function RankRevealStep({ onComplete }) {
 
 // ─── Main flow ────────────────────────────────────────────────────────────────
 
-export default function OnboardingFlow({ onComplete }) {
+export default function OnboardingFlow({ onComplete, userId }) {
   const [step, setStep]       = useState(0);
   const [answers, setAnswers] = useState({ cookingLevel: null, cuisineStyle: [], goal: null });
 
@@ -356,10 +356,10 @@ export default function OnboardingFlow({ onComplete }) {
 
   const handleComplete = async () => {
     const payload = { ...answers, completedAt: new Date().toISOString() };
+    const key = userId ? `onboarding_complete_${userId}` : 'onboarding_complete';
     try {
-      // Answers stored locally — sync to Supabase/backend when auth is set up
-      await AsyncStorage.setItem('onboarding_answers',  JSON.stringify(payload));
-      await AsyncStorage.setItem('onboarding_complete', 'true');
+      await AsyncStorage.setItem('onboarding_answers', JSON.stringify(payload));
+      await AsyncStorage.setItem(key, 'true');
     } catch (_) {}
     onComplete();
   };
