@@ -1,70 +1,134 @@
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Dimensions, Image, PanResponder, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { VideoView, useVideoPlayer } from 'expo-video';
 import { supabase } from '../lib/supabase';
-import { getProfile, getFeed, voteCook, unvoteCook, timeAgo } from '../lib/api';
+import { getProfile, getFeed, getEvents, voteCook, unvoteCook, timeAgo } from '../lib/api';
+import { xpProgress, cooksToNextLevel, nextLevelName, RANK_COLORS, rankFromXp } from '../lib/xp';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing, typography, borders } from '../theme';
+import VoteNotifBell from '../components/VoteNotifBell';
+import AvatarImage from '../components/AvatarImage';
+import ActiveDuelBanner from '../components/ActiveDuelBanner';
+
+const SEEN_WINNERS_KEY = '@seen_winner_events';
+
+async function getSeenWinners() {
+  try {
+    const raw = await AsyncStorage.getItem(SEEN_WINNERS_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+}
+
+async function markWinnersSeen(eventIds) {
+  try {
+    const seen = await getSeenWinners();
+    eventIds.forEach(id => seen.add(id));
+    await AsyncStorage.setItem(SEEN_WINNERS_KEY, JSON.stringify([...seen]));
+  } catch {}
+}
+
+function applyWinnerBoost(posts, seenEventIds) {
+  const unseen = posts.filter(p => p.is_event_winner && p.event_id && !seenEventIds.has(p.event_id));
+  if (!unseen.length) return posts;
+  const rest = posts.filter(p => !unseen.includes(p));
+  return [...unseen, ...rest];
+}
 
 const WINDOW = Dimensions.get('window');
 const CARD_HEIGHT = WINDOW.height * 0.68;
 const CARD_GAP = spacing.xs;
 
-const XP_PER_RANK = 5000;
-
-const WEEKLY_EVENT = {
-  title: 'STREET FOOD SHOWDOWN',
-  subtitle: 'Cook your best street food dish & get voted to the top',
-  prize: '5,000 XP + GOLD BADGE',
-  participants: 248,
-  endsAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000 + 7 * 3600 * 1000 + 44 * 60 * 1000),
-};
-
-const RANK_COLORS = {
-  'Gold Cook':        '#FFB800',
-  'Emerald Cook':     '#00C47A',
-  'Diamond Cook':     '#88CCFF',
-  'Chef':             '#E8001C',
-  'Exec Chef':        '#A855F7',
-  'Master Chef':      '#FF6B00',
-  'World Class Chef': '#E8C840',
-};
-
 // ─── Countdown hook ────────────────────────────────────────────────────────────
 
-function useCountdown(targetDate) {
-  const calc = () => {
-    const diff = Math.max(0, targetDate - Date.now());
+function useCountdown(targetMs) {
+  const calc = useCallback(() => {
+    const diff = Math.max(0, (targetMs ?? 0) - Date.now());
     return {
       days:  Math.floor(diff / (1000 * 60 * 60 * 24)),
       hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
       mins:  Math.floor((diff / (1000 * 60)) % 60),
       secs:  Math.floor((diff / 1000) % 60),
     };
-  };
+  }, [targetMs]);
   const [time, setTime] = useState(calc);
   useEffect(() => {
+    setTime(calc());
     const id = setInterval(() => setTime(calc()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [calc]);
   return time;
 }
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
+// ─── Video frame ──────────────────────────────────────────────────────────────
+
+function VideoFrame({ uri }) {
+  const player = useVideoPlayer(uri, p => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+
+  return (
+    <VideoView
+      player={player}
+      style={StyleSheet.absoluteFill}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+}
+
 // ─── TikTok-style feed card ────────────────────────────────────────────────────
 
-function TikTokCard({ item, index, userId }) {
+function TikTokCard({ item, index, userId, eventsMap }) {
   const isTop = index === 0;
   const profile = item.profiles || {};
-  const rankColor = RANK_COLORS[profile.rank] || colors.accent;
-  const initiallyVoted = (item.votes || []).some(v => v.user_id === userId);
-  const [voted, setVoted] = useState(initiallyVoted);
+  const { rank: computedRank, tier: computedTier } = rankFromXp(profile.xp ?? 0);
+  const rankColor = RANK_COLORS[computedRank] || colors.accent;
+  const cardNavigation = useNavigation();
+  const [voted, setVoted] = useState(false);
   const [voteCount, setVoteCount] = useState((item.votes || []).length);
+
+  // Sync voted state once userId is available (arrives after first render)
+  useEffect(() => {
+    if (!userId) return;
+    setVoted((item.votes || []).some(v => v.user_id === userId));
+  }, [userId]);
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
+  const photos = item.photo_urls || [];
+  const hasVideo = !!item.video_url;
+
+  // Flat media array: video first, then photos in reverse (finale → mid-cook → pre-cook)
+  const mediaItems = useMemo(() => {
+    const items = [];
+    if (hasVideo) items.push({ type: 'video', uri: item.video_url });
+    [...photos].reverse().forEach(uri => items.push({ type: 'photo', uri }));
+    return items;
+  }, []);
+  const [activeMediaIdx, setActiveMediaIdx] = useState(0);
+  const activeMedia = mediaItems[activeMediaIdx] ?? null;
+
+  // Swipe gesture to advance/retreat media
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, { dx, dy }) =>
+        Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10,
+      onPanResponderRelease: (_, { dx }) => {
+        if (dx < -50) setActiveMediaIdx(i => Math.min(i + 1, mediaItems.length - 1));
+        else if (dx > 50) setActiveMediaIdx(i => Math.max(i - 1, 0));
+      },
+    })
+  ).current;
+
   async function handleVote() {
+    if (!userId) return;
     const next = !voted;
     setVoted(next);
     setVoteCount(c => c + (next ? 1 : -1));
@@ -76,32 +140,47 @@ function TikTokCard({ item, index, userId }) {
       if (next) await voteCook(item.id, userId);
       else await unvoteCook(item.id, userId);
     } catch {
-      // revert on error
       setVoted(!next);
       setVoteCount(c => c + (next ? -1 : 1));
     }
   }
 
-  const stripeColor = rankColor;
-
   return (
-    <View style={[styles.tikTokCard, { height: CARD_HEIGHT }, isTop && styles.tikTokCardTop]}>
-      {/* Background image placeholder with diagonal stripes */}
-      <View style={[styles.tikTokImage, { backgroundColor: '#0a0a0a' }]}>
-        <View style={styles.tikTokStripes} pointerEvents="none">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <View key={i} style={[styles.tikTokStripe, { backgroundColor: stripeColor, opacity: isTop ? 0.07 : 0.04 }]} />
-          ))}
-        </View>
-        <Ionicons name="restaurant" size={64} color={isTop ? stripeColor : '#1a1a1a'} style={{ opacity: isTop ? 0.3 : 1 }} />
-        {/* 3-clip indicator */}
-        <View style={styles.clipRow}>
-          {[0, 1, 2].map(i => (
-            <View key={i} style={[styles.clipFrame, i === 1 && { borderColor: stripeColor }]}>
-              <Ionicons name="camera" size={9} color={i === 1 ? stripeColor : '#333'} />
+    <View style={[styles.tikTokCard, { height: CARD_HEIGHT }, (isTop || item.is_event_winner) && styles.tikTokCardTop]} {...panResponder.panHandlers}>
+      {/* Background — pointerEvents none so clip-frame taps pass through */}
+      <View style={[styles.tikTokImage, { backgroundColor: '#0a0a0a' }]} pointerEvents="none">
+        {activeMedia?.type === 'video' ? (
+          <VideoFrame uri={activeMedia.uri} />
+        ) : activeMedia?.uri ? (
+          <Image source={{ uri: activeMedia.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        ) : (
+          <>
+            <View style={styles.tikTokStripes} pointerEvents="none">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <View key={i} style={[styles.tikTokStripe, { backgroundColor: rankColor, opacity: isTop ? 0.07 : 0.04 }]} />
+              ))}
             </View>
-          ))}
-        </View>
+            <Ionicons name="restaurant" size={64} color={isTop ? rankColor : '#1a1a1a'} style={{ opacity: isTop ? 0.3 : 1 }} />
+          </>
+        )}
+      </View>
+
+      {/* Clip strip — video first, then photos */}
+      <View style={styles.clipRow}>
+        {mediaItems.map((m, i) => {
+          const active = i === activeMediaIdx;
+          const activeColor = m.type === 'video' ? colors.primary : rankColor;
+          return (
+            <TouchableOpacity
+              key={i}
+              style={[styles.clipFrame, active && { borderColor: activeColor, backgroundColor: activeColor }]}
+              onPress={() => setActiveMediaIdx(i)}
+              activeOpacity={0.75}
+            >
+              <Ionicons name={m.type === 'video' ? 'play' : 'camera'} size={9} color={active ? colors.background : '#555'} />
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Position badge */}
@@ -137,17 +216,47 @@ function TikTokCard({ item, index, userId }) {
 
       {/* Bottom info overlay */}
       <View style={styles.tikTokOverlay}>
-        <Text style={styles.tikTokDish} numberOfLines={1}>{item.dish_name}</Text>
-        <View style={styles.tikTokUserRow}>
+        {item.event_id && (
+          <View style={[styles.tikTokEventBadge, item.is_event_winner && styles.tikTokEventBadgeWinner]}>
+            <Ionicons
+              name={item.is_event_winner ? 'trophy' : 'star'}
+              size={9}
+              color={item.is_event_winner ? '#000' : colors.gold}
+            />
+            <Text style={[styles.tikTokEventBadgeText, item.is_event_winner && styles.tikTokEventBadgeTextWinner]}>
+              {item.is_event_winner
+                ? `WINNER · ${eventsMap?.[item.event_id]?.title ?? 'EVENT'}`
+                : (eventsMap?.[item.event_id]?.title ?? 'EVENT ENTRY')}
+            </Text>
+          </View>
+        )}
+        <TouchableOpacity activeOpacity={0.75} onPress={() => cardNavigation.navigate('PostDetail', { item })}>
+          <Text style={styles.tikTokDish} numberOfLines={1}>{item.dish_name}</Text>
+        </TouchableOpacity>
+        {item.inspired_by?.username && (
+          <TouchableOpacity
+            style={styles.tikTokInspiredRow}
+            activeOpacity={0.7}
+            onPress={() => cardNavigation.navigate('PostDetail', { cookId: item.inspired_by_cook_id })}
+          >
+            <Ionicons name="link-outline" size={10} color={colors.inactive} />
+            <Text style={styles.tikTokInspiredText}>Inspired by @{item.inspired_by.username}</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity
+          style={styles.tikTokUserRow}
+          activeOpacity={0.7}
+          onPress={() => profile.id && cardNavigation.navigate('UserProfile', { userId: profile.id })}
+        >
           <View style={[styles.tikTokLevelDot, { backgroundColor: rankColor }]}>
-            <Text style={styles.tikTokLevelDotText}>{profile.level}</Text>
+            <Text style={styles.tikTokLevelDotText}>{computedTier}</Text>
           </View>
           <Text style={styles.tikTokUsername}>@{profile.username}</Text>
           <View style={[styles.tikTokRankChip, { borderColor: rankColor }]}>
-            <Text style={[styles.tikTokRankChipText, { color: rankColor }]}>{profile.rank}</Text>
+            <Text style={[styles.tikTokRankChipText, { color: rankColor }]}>{computedRank}</Text>
           </View>
           <Text style={styles.tikTokTime}>{timeAgo(item.created_at)}</Text>
-        </View>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -155,29 +264,124 @@ function TikTokCard({ item, index, userId }) {
 
 // ─── Main screen ───────────────────────────────────────────────────────────────
 
+function pickFeaturedEvent(events) {
+  const now = Date.now();
+  const live = events.filter(e =>
+    new Date(e.starts_at).getTime() <= now &&
+    new Date(e.ends_at).getTime() > now
+  );
+  if (!live.length) return null;
+  return live.reduce((best, e) => (e.xp_reward > best.xp_reward ? e : best), live[0]);
+}
+
 export default function HomeScreen() {
-  const countdown = useCountdown(WEEKLY_EVENT.endsAt);
+  const navigation = useNavigation();
   const [headerHeight, setHeaderHeight] = useState(0);
   const [profile, setProfile] = useState(null);
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState(null);
+  const [featuredEvent, setFeaturedEvent] = useState(null);
+  const [eventsMap, setEventsMap] = useState({});
+  const [cookCount, setCookCount] = useState(0);
+  const [hasEnteredEvent, setHasEnteredEvent] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const feedOffset = useRef(0);
+  const FEED_PAGE = 20;
+
+  const countdown = useCountdown(featuredEvent ? new Date(featuredEvent.ends_at).getTime() : null);
+
+  useEffect(() => {
+    if (!featuredEvent || !userId) { setHasEnteredEvent(false); return; }
+    supabase
+      .from('cooks')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('event_id', featuredEvent.id)
+      .then(({ count }) => setHasEnteredEvent((count ?? 0) > 0))
+      .catch(() => {});
+  }, [featuredEvent?.id, userId]);
+
+  function applyEvents(events) {
+    setFeaturedEvent(pickFeaturedEvent(events));
+    setEventsMap(Object.fromEntries(events.map(e => [e.id, e])));
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) return;
       const uid = session.user.id;
       setUserId(uid);
-      Promise.all([getProfile(uid), getFeed()]).then(([prof, feed]) => {
-        setProfile(prof);
-        setPosts(feed);
-        setLoading(false);
-      }).catch(() => setLoading(false));
+
+      // Profile + cook count load independently — never blocked by feed/events
+      getProfile(uid).then(setProfile).catch(() => {});
+      supabase.from('cooks').select('*', { count: 'exact', head: true })
+        .eq('user_id', uid)
+        .then(({ count }) => setCookCount(count ?? 0))
+        .catch(() => {});
+
+      // Feed + events
+      Promise.all([getFeed({ limit: FEED_PAGE, offset: 0 }), getEvents(), getSeenWinners()])
+        .then(([feed, events, seen]) => {
+          const boosted = applyWinnerBoost(feed, seen);
+          const newWinners = feed.filter(p => p.is_event_winner && p.event_id && !seen.has(p.event_id)).map(p => p.event_id);
+          if (newWinners.length) markWinnersSeen(newWinners);
+          setPosts(boosted);
+          feedOffset.current = feed.length;
+          setHasMore(feed.length === FEED_PAGE);
+          applyEvents(events);
+        })
+        .catch(() => {})
+        .finally(() => setLoading(false));
     });
   }, []);
 
-  const xpPct = profile ? Math.min((profile.xp / XP_PER_RANK) * 100, 100) : 0;
-  const rankColor = RANK_COLORS[profile?.rank] || colors.accent;
+  // Refresh feed, profile, and event each time the tab is focused
+  useFocusEffect(useCallback(() => {
+    if (!userId) return;
+
+    // Profile + cook count always load independently
+    getProfile(userId).then(setProfile).catch(() => {});
+    supabase.from('cooks').select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .then(({ count }) => setCookCount(count ?? 0))
+      .catch(() => {});
+
+    Promise.all([getFeed({ limit: FEED_PAGE, offset: 0 }), getSeenWinners()])
+      .then(([feed, seen]) => {
+        const boosted = applyWinnerBoost(feed, seen);
+        const newWinners = feed.filter(p => p.is_event_winner && p.event_id && !seen.has(p.event_id)).map(p => p.event_id);
+        if (newWinners.length) markWinnersSeen(newWinners);
+        setPosts(boosted);
+        feedOffset.current = feed.length;
+        setHasMore(feed.length === FEED_PAGE);
+      })
+      .catch(() => {});
+
+    getEvents().then(applyEvents).catch(() => {});
+  }, [userId]));
+
+  async function handleLoadMore() {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const more = await getFeed({ limit: FEED_PAGE, offset: feedOffset.current });
+      setPosts(prev => {
+        const seen = new Set(prev.map(p => p.id));
+        return [...prev, ...more.filter(p => !seen.has(p.id))];
+      });
+      feedOffset.current += more.length;
+      setHasMore(more.length === FEED_PAGE);
+    } catch {}
+    setLoadingMore(false);
+  }
+
+  const { current: xpInLevel, needed: xpNeeded, pct: xpPct } = xpProgress(profile?.xp ?? 0);
+  const { rank: myComputedRank } = rankFromXp(profile?.xp ?? 0);
+  const rankColor = RANK_COLORS[myComputedRank] || colors.accent;
+  const cooksLeft = cooksToNextLevel(profile?.xp ?? 0);
+  const nextLevel = nextLevelName(profile?.xp ?? 0);
 
   const snapOffsets = useMemo(
     () => posts.map((_, i) => headerHeight + i * (CARD_HEIGHT + CARD_GAP)),
@@ -189,14 +393,16 @@ export default function HomeScreen() {
       {/* Player card */}
       <View style={styles.playerCard}>
         <View style={styles.playerTop}>
-          <View style={styles.levelBadge}>
-            <Text style={styles.levelLabel}>LVL</Text>
-            <Text style={styles.levelNum}>{profile?.level ?? 1}</Text>
-          </View>
+          <AvatarImage
+            uri={profile?.avatar_url}
+            letters={(profile?.username ?? '?').slice(0, 2).toUpperCase()}
+            rankColor={rankColor}
+            size={48}
+          />
           <View style={styles.playerInfo}>
             <Text style={styles.playerName}>{profile?.username ?? '...'}</Text>
             <View style={[styles.rankBadge, { borderColor: rankColor }]}>
-              <Text style={[styles.rankText, { color: rankColor }]}>{profile?.rank ?? '...'}</Text>
+              <Text style={[styles.rankText, { color: rankColor }]}>{profile ? myComputedRank : '...'}</Text>
             </View>
           </View>
           <View style={styles.streakPill}>
@@ -204,56 +410,102 @@ export default function HomeScreen() {
             <Text style={styles.streakText}>{profile?.streak ?? 0}</Text>
           </View>
         </View>
+        <View style={styles.statsRow}>
+          <View style={styles.statItem}>
+            <Ionicons name="flame" size={12} color={colors.primary} />
+            <Text style={styles.statNum}>{(profile?.total_votes ?? 0).toLocaleString()}</Text>
+            <Text style={styles.statLabel}>VOTES</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Ionicons name="restaurant" size={12} color={colors.accent} />
+            <Text style={styles.statNum}>{cookCount.toLocaleString()}</Text>
+            <Text style={styles.statLabel}>COOKS</Text>
+          </View>
+          <View style={styles.statDivider} />
+          <View style={styles.statItem}>
+            <Ionicons name="trophy" size={12} color={colors.gold} />
+            <Text style={styles.statNum}>{profile?.global_rank ? `#${profile.global_rank}` : '—'}</Text>
+            <Text style={styles.statLabel}>RANK</Text>
+          </View>
+        </View>
         <View style={styles.xpRow}>
-          <Text style={styles.xpLabel}>XP TO NEXT RANK</Text>
-          <Text style={styles.xpNums}>{(profile?.xp ?? 0).toLocaleString()} / {XP_PER_RANK.toLocaleString()}</Text>
+          <Text style={styles.xpLabel}>XP TO NEXT LEVEL</Text>
+          <Text style={styles.xpNums}>
+            {nextLevel ? `${xpInLevel.toLocaleString()} / ${xpNeeded.toLocaleString()}` : 'MAX'}
+          </Text>
         </View>
         <View style={styles.xpTrack}>
-          <View style={[styles.xpFill, { width: `${xpPct}%` }]} />
+          <View style={[styles.xpFill, { width: `${xpPct}%`, backgroundColor: rankColor }]} />
           <View style={[styles.xpMarker, { left: `${xpPct}%` }]} />
         </View>
+        {nextLevel ? (
+          <Text style={styles.xpPreview}>~{cooksLeft} cook{cooksLeft !== 1 ? 's' : ''} to {nextLevel}</Text>
+        ) : (
+          <Text style={styles.xpPreview}>Maximum rank achieved</Text>
+        )}
       </View>
 
-      {/* Weekly event card */}
-      <View style={styles.eventCard}>
-        <View style={styles.eventHeader}>
-          <View style={styles.eventBadge}>
-            <Text style={styles.eventBadgeText}>WEEKLY EVENT</Text>
-          </View>
-          <View style={styles.participantsBadge}>
-            <Ionicons name="people" size={12} color={colors.accent} />
-            <Text style={styles.participantsText}>{WEEKLY_EVENT.participants}</Text>
-          </View>
-        </View>
-        <Text style={styles.eventTitle}>{WEEKLY_EVENT.title}</Text>
-        <Text style={styles.eventSubtitle}>{WEEKLY_EVENT.subtitle}</Text>
-
-        {/* Countdown — boxes stacked, separators between them */}
-        <View style={styles.countdownRow}>
-          {[
-            { val: countdown.days,  label: 'DAYS' },
-            { val: countdown.hours, label: 'HRS'  },
-            { val: countdown.mins,  label: 'MIN'  },
-            { val: countdown.secs,  label: 'SEC'  },
-          ].map(({ val, label }, i) => (
-            <View key={label} style={styles.countdownGroup}>
-              <View style={styles.countdownBox}>
-                <Text style={styles.countdownNum}>{pad(val)}</Text>
-              </View>
-              <Text style={styles.countdownLabel}>{label}</Text>
-              {i < 3 && <Text style={styles.countdownSep}>:</Text>}
+      {/* Live event card — only shown when there's an active event */}
+      {featuredEvent && (
+        <View style={styles.eventCard}>
+          <View style={styles.eventHeader}>
+            <View style={styles.eventBadge}>
+              <Text style={styles.eventBadgeText}>LIVE EVENT</Text>
             </View>
-          ))}
-        </View>
+            <View style={styles.xpAwardPill}>
+              <Text style={styles.xpAwardText}>+{featuredEvent.xp_reward} XP</Text>
+            </View>
+          </View>
+          <Text style={styles.eventTitle}>{featuredEvent.title}</Text>
+          {featuredEvent.subtitle ? (
+            <Text style={styles.eventSubtitle}>{featuredEvent.subtitle}</Text>
+          ) : null}
 
-        <View style={styles.prizeRow}>
-          <Ionicons name="trophy" size={14} color={colors.gold} />
-          <Text style={styles.prizeText}>{WEEKLY_EVENT.prize}</Text>
+          {/* Countdown */}
+          <View style={styles.countdownRow}>
+            {[
+              { val: countdown.days,  label: 'DAYS' },
+              { val: countdown.hours, label: 'HRS'  },
+              { val: countdown.mins,  label: 'MIN'  },
+              { val: countdown.secs,  label: 'SEC'  },
+            ].map(({ val, label }, i) => (
+              <View key={label} style={styles.countdownGroup}>
+                <View style={styles.countdownBox}>
+                  <Text style={styles.countdownNum}>{pad(val)}</Text>
+                </View>
+                <Text style={styles.countdownLabel}>{label}</Text>
+                {i < 3 && <Text style={styles.countdownSep}>:</Text>}
+              </View>
+            ))}
+          </View>
+
+          {featuredEvent.prize_label ? (
+            <View style={styles.prizeRow}>
+              <Ionicons name="trophy" size={14} color={colors.gold} />
+              <Text style={styles.prizeText}>{featuredEvent.prize_label}</Text>
+            </View>
+          ) : null}
+          {hasEnteredEvent ? (
+            <View style={styles.youCookedBtn}>
+              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+              <Text style={styles.youCookedBtnText}>YOU COOKED!</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.joinBtn}
+              activeOpacity={0.85}
+              onPress={() => navigation.navigate('Cook', {
+                eventId: featuredEvent.id,
+                eventTitle: featuredEvent.title,
+                eventXpReward: featuredEvent.xp_reward,
+              })}
+            >
+              <Text style={styles.joinBtnText}>JOIN EVENT</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        <TouchableOpacity style={styles.joinBtn} activeOpacity={0.85}>
-          <Text style={styles.joinBtnText}>JOIN EVENT</Text>
-        </TouchableOpacity>
-      </View>
+      )}
 
       {/* Section header */}
       <View style={styles.sectionHeader}>
@@ -269,18 +521,16 @@ export default function HomeScreen() {
       {/* Top bar — outside scroll so it stays fixed */}
       <View style={styles.appHeader}>
         <Text style={styles.appTitle}>LET ME COOK!</Text>
-        <TouchableOpacity style={styles.notifBtn} activeOpacity={0.8}>
-          <Ionicons name="notifications" size={20} color={colors.white} />
-          <View style={styles.notifDot} />
-        </TouchableOpacity>
+        <VoteNotifBell />
       </View>
+      <ActiveDuelBanner />
 
       <FlatList
         data={posts}
         keyExtractor={item => item.id}
         ListHeaderComponent={ListHeader}
         renderItem={({ item, index }) => (
-          <TikTokCard item={item} index={index} userId={userId} />
+          <TikTokCard item={item} index={index} userId={userId} eventsMap={eventsMap} />
         )}
         ListEmptyComponent={
           !loading && (
@@ -295,6 +545,9 @@ export default function HomeScreen() {
         decelerationRate="fast"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={loadingMore ? <ActivityIndicator color={colors.primary} style={{ padding: spacing.lg }} /> : null}
       />
     </SafeAreaView>
   );
@@ -378,6 +631,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
   },
   streakText: { color: colors.gold, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black },
+  statsRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.background,
+    borderWidth: borders.thin, borderColor: colors.border,
+    marginBottom: spacing.sm,
+  },
+  statItem: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 4, paddingVertical: spacing.sm,
+  },
+  statNum: {
+    color: colors.white, fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.black,
+  },
+  statLabel: {
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide,
+  },
+  statDivider: { width: 1, height: '60%', backgroundColor: colors.border },
   xpRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.xs },
   xpLabel: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wider },
   xpNums: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
@@ -387,6 +659,11 @@ const styles = StyleSheet.create({
   },
   xpFill: { height: '100%', backgroundColor: colors.accent },
   xpMarker: { position: 'absolute', top: 0, width: 3, height: '100%', backgroundColor: colors.white, marginLeft: -1 },
+  xpPreview: {
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold, marginTop: spacing.xs,
+    letterSpacing: typography.letterSpacing.wide,
+  },
 
   // Event card
   eventCard: {
@@ -397,12 +674,12 @@ const styles = StyleSheet.create({
   eventHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
   eventBadge: { backgroundColor: colors.primary, paddingHorizontal: spacing.sm, paddingVertical: 3 },
   eventBadgeText: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
-  participantsBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    borderWidth: borders.thin, borderColor: colors.border,
+  xpAwardPill: {
+    backgroundColor: '#1a3a1a',
+    borderWidth: borders.thin, borderColor: colors.success,
     paddingHorizontal: spacing.sm, paddingVertical: 3,
   },
-  participantsText: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  xpAwardText: { color: colors.success, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
   eventTitle: {
     color: colors.white, fontSize: typography.fontSize.xl,
     fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.tight, marginBottom: spacing.xs,
@@ -426,6 +703,13 @@ const styles = StyleSheet.create({
   prizeText: { color: colors.gold, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, letterSpacing: typography.letterSpacing.wide },
   joinBtn: { backgroundColor: colors.primary, borderWidth: borders.thin, borderColor: '#000', paddingVertical: spacing.sm + 2, alignItems: 'center' },
   joinBtnText: { color: colors.white, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  youCookedBtn: {
+    borderWidth: borders.medium, borderColor: colors.success,
+    backgroundColor: '#001a00',
+    paddingVertical: spacing.sm + 2,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+  },
+  youCookedBtnText: { color: colors.success, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
 
   // Section
   sectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm, gap: spacing.sm },
@@ -532,6 +816,25 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     padding: spacing.md,
   },
+  tikTokEventBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: '#1a1400',
+    borderWidth: 1, borderColor: colors.gold,
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.xs, paddingVertical: 2,
+    marginBottom: spacing.xs,
+  },
+  tikTokEventBadgeWinner: {
+    backgroundColor: colors.gold,
+    borderColor: '#a37800',
+  },
+  tikTokEventBadgeText: {
+    color: colors.gold, fontSize: 8,
+    fontWeight: typography.fontWeight.black, letterSpacing: 1,
+  },
+  tikTokEventBadgeTextWinner: {
+    color: '#000',
+  },
   tikTokDish: {
     color: colors.white,
     fontSize: typography.fontSize.xl,
@@ -539,6 +842,8 @@ const styles = StyleSheet.create({
     letterSpacing: typography.letterSpacing.tight,
     marginBottom: spacing.xs,
   },
+  tikTokInspiredRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
+  tikTokInspiredText: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
   tikTokUserRow: {
     flexDirection: 'row',
     alignItems: 'center',

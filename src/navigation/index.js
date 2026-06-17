@@ -9,6 +9,12 @@ import RivalsScreen from '../screens/RivalsScreen';
 import EventsScreen from '../screens/EventsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import RankUpScreen from '../screens/RankUpScreen';
+import CookSuccessScreen from '../screens/CookSuccessScreen';
+import UserProfileScreen from '../screens/UserProfileScreen';
+import DuelResultScreen from '../screens/DuelResultScreen';
+import PostDetailScreen from '../screens/PostDetailScreen';
+import SettingsScreen from '../screens/SettingsScreen';
+import EditProfileScreen from '../screens/EditProfileScreen';
 import { colors, typography, borders } from '../theme';
 
 const Tab = createBottomTabNavigator();
@@ -92,6 +98,20 @@ export default function Navigation() {
           component={RankUpScreen}
           options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
         />
+        <Root.Screen
+          name="CookSuccess"
+          component={CookSuccessScreen}
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
+        />
+        <Root.Screen name="UserProfile" component={UserProfileScreen} />
+        <Root.Screen
+          name="DuelResult"
+          component={DuelResultScreen}
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
+        />
+        <Root.Screen name="PostDetail" component={PostDetailScreen} />
+        <Root.Screen name="Settings" component={SettingsScreen} />
+        <Root.Screen name="EditProfile" component={EditProfileScreen} />
       </Root.Navigator>
     </NavigationContainer>
   );

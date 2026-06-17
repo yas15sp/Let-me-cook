@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, StyleSheet, Dimensions, TouchableOpacity,
-  StatusBar, Animated, Easing,
+  StatusBar, Animated, Easing, BackHandler, Share,
 } from 'react-native';
+import { CommonActions } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme';
 
@@ -17,7 +18,7 @@ const RANK_CONFIG = {
   'Chef':              { color: '#E8001C', word: 'CHEF UP!',     tier: 3 },
   'Exec Chef':         { color: '#A855F7', word: 'ELITE!',       tier: 4 },
   'Master Chef':       { color: '#FF6B00', word: 'LEGENDARY!',   tier: 5 },
-  'World Class Chef':  { color: '#E8C840', word: 'WORLD CLASS!', tier: 6 },
+  'World Class Chef':  { color: '#FFFFFF', word: 'WORLD CLASS!', tier: 6 },
 };
 
 const CONFETTI_COLORS = ['#E8001C', '#FFE500', '#00C47A', '#88CCFF', '#A855F7', '#FF6B00', '#FFF'];
@@ -86,7 +87,7 @@ function ConfettiPiece({ index, start }) {
   const cfg = useRef({
     dx: (Math.random() - 0.5) * W * 1.3,
     dy: H * 0.35 + Math.random() * H * 0.55,
-    delay: 3500 + Math.random() * 700,
+    delay: Math.random() * 700,
     dur: 1400 + Math.random() * 900,
     color: CONFETTI_COLORS[index % CONFETTI_COLORS.length],
     w: 5 + Math.random() * 7,
@@ -319,8 +320,26 @@ export default function RankUpScreen({ route, navigation }) {
     }
   }, []);
 
-  const handleKeepCooking = () => navigation.goBack();
-  const handleViewRank    = () => { navigation.goBack(); navigation.getParent()?.navigate('Profile'); };
+  const goToFeed    = () => navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'MainTabs', params: { screen: 'Feed' } }] }));
+  const goToProfile = () => navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'MainTabs', params: { screen: 'Profile' } }] }));
+  const handleKeepCooking = goToFeed;
+  const handleViewRank    = goToProfile;
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      goToFeed();
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
+
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        message: `I just ranked up to ${toRank} on Let Me Cook! 🔥 +${xpEarned} XP`,
+      });
+    } catch {}
+  };
 
   return (
     <View style={styles.container}>
@@ -409,7 +428,7 @@ export default function RankUpScreen({ route, navigation }) {
             <Text style={styles.ctaSecondaryText}>VIEW RANK</Text>
           </TouchableOpacity>
           <View style={styles.ctaDivider} />
-          <TouchableOpacity style={styles.ctaSecondary} onPress={handleKeepCooking} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.ctaSecondary} onPress={handleShare} activeOpacity={0.8}>
             <Text style={styles.ctaSecondaryText}>SHARE CLIP</Text>
           </TouchableOpacity>
         </View>

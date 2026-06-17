@@ -1,127 +1,93 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
+  ActivityIndicator,
   Animated,
-  ScrollView,
+  Dimensions,
+  FlatList,
+  Image,
+  PanResponder,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../lib/supabase';
 import { colors, spacing, typography, borders } from '../theme';
+import { getEvents, getEventEntries, awardEventWinner, voteCook, unvoteCook, timeAgo } from '../lib/api';
+import VoteNotifBell from '../components/VoteNotifBell';
+import ActiveDuelBanner from '../components/ActiveDuelBanner';
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
+const { width: W, height: H } = Dimensions.get('window');
+const CARD_HEIGHT = H * 0.66;
 
-const FEATURED = {
-  id: 'f1',
-  title: 'WEEKEND WIPEOUT',
-  subtitle: 'Iron Chef style — one mystery ingredient revealed at start',
-  endsAt: Date.now() + 1000 * 60 * 60 * 14 + 1000 * 60 * 37, // 14h 37m from now
-  xpReward: 500,
-  prizeLabel: '🏆 Gold Trophy',
-  participants: 1204,
-  minRank: null,
-  tag: 'LIVE',
-  tagColor: colors.primary,
-  accent: colors.accent,
+const RANK_COLORS = {
+  'Gold Cook':        '#FFB800',
+  'Emerald Cook':     '#00C47A',
+  'Diamond Cook':     '#88CCFF',
+  'Chef':             '#E8001C',
+  'Exec Chef':        '#A855F7',
+  'Master Chef':      '#FF6B00',
+  'World Class Chef': '#FFFFFF',
 };
 
-const UPCOMING = [
-  {
-    id: 'u1',
-    title: 'RAMEN ROYALE',
-    subtitle: 'Best broth wins. Classic, modern, or fusion.',
-    startsIn: 1000 * 60 * 60 * 26,
-    xpReward: 300,
-    participants: 88,
-    minRank: 'Emerald Cook',
-    minRankColor: '#00C47A',
-    tag: 'SOON',
-    tagColor: '#00C47A',
-  },
-  {
-    id: 'u2',
-    title: 'DESSERT DUEL',
-    subtitle: 'Sweet, savoury, or somewhere in between.',
-    startsIn: 1000 * 60 * 60 * 51,
-    xpReward: 250,
-    participants: 214,
-    minRank: null,
-    tag: 'SOON',
-    tagColor: '#00C47A',
-  },
-  {
-    id: 'u3',
-    title: 'KNIFE SKILLS CHALLENGE',
-    subtitle: 'Speed + precision. Julienne, chiffonade, brunoise.',
-    startsIn: 1000 * 60 * 60 * 72,
-    xpReward: 200,
-    participants: 56,
-    minRank: 'Diamond Cook',
-    minRankColor: '#88CCFF',
-    tag: 'SOON',
-    tagColor: '#00C47A',
-  },
-];
-
-const PAST = [
-  {
-    id: 'p1',
-    title: 'TACO TAKEDOWN',
-    endedAgo: '2 days ago',
-    xpReward: 300,
-    participants: 932,
-    winner: 'jamie_k',
-    tag: 'ENDED',
-    tagColor: colors.inactive,
-  },
-  {
-    id: 'p2',
-    title: 'BRUNCH BATTLE',
-    endedAgo: '5 days ago',
-    xpReward: 200,
-    participants: 741,
-    winner: 'priya_s',
-    tag: 'ENDED',
-    tagColor: colors.inactive,
-  },
-];
-
-// ─── Countdown hook ────────────────────────────────────────────────────────────
+// ─── Countdown ────────────────────────────────────────────────────────────────
 
 function useCountdown(targetMs) {
-  const [remaining, setRemaining] = useState(Math.max(0, targetMs - Date.now()));
-  useEffect(() => {
-    const id = setInterval(() => setRemaining(Math.max(0, targetMs - Date.now())), 1000);
-    return () => clearInterval(id);
+  const calc = useCallback(() => {
+    const diff = Math.max(0, (targetMs ?? 0) - Date.now());
+    return {
+      h: Math.floor(diff / 3600000),
+      m: Math.floor((diff % 3600000) / 60000),
+      s: Math.floor((diff % 60000) / 1000),
+    };
   }, [targetMs]);
-
-  const totalSecs = Math.floor(remaining / 1000);
-  const h = Math.floor(totalSecs / 3600);
-  const m = Math.floor((totalSecs % 3600) / 60);
-  const s = totalSecs % 60;
-  const pad = (n) => String(n).padStart(2, '0');
-  return { h, m, s, pad, totalSecs };
+  const [t, setT] = useState(calc);
+  useEffect(() => {
+    setT(calc());
+    const id = setInterval(() => setT(calc()), 1000);
+    return () => clearInterval(id);
+  }, [calc]);
+  return t;
 }
 
-function formatStartsIn(ms) {
-  const h = Math.floor(ms / 1000 / 3600);
-  if (h < 24) return `Starts in ${h}h`;
-  const d = Math.floor(h / 24);
-  return `Starts in ${d}d`;
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function classifyEvents(events) {
+  const now = Date.now();
+  const live = [], upcoming = [], past = [];
+  for (const e of events) {
+    const startsAt = new Date(e.starts_at).getTime();
+    const endsAt = new Date(e.ends_at).getTime();
+    if (endsAt < now) {
+      const winner = e.winner_cook
+        ? { dishName: e.winner_cook.dish_name, username: e.winner_cook.profiles?.username, rank: e.winner_cook.profiles?.rank }
+        : null;
+      past.push({ ...e, winner, endedAgo: timeAgo(e.ends_at) });
+    } else if (startsAt > now) {
+      upcoming.push({ ...e, startsIn: startsAt - now });
+    } else {
+      live.push({ ...e, endsAt });
+    }
+  }
+  return { live, upcoming, past };
 }
 
-// ─── Featured event ────────────────────────────────────────────────────────────
+// ─── Event header (live event + rules + enter) ────────────────────────────────
 
-function FeaturedEvent({ event, onEnter }) {
-  const { h, m, s, pad } = useCountdown(event.endsAt);
-  const urgent = h === 0;
+function EventHeader({ event, entryCount, onEnter, hasEntered }) {
+  const { h, m, s } = useCountdown(event.endsAt);
+  const urgent = h === 0 && m < 60;
   const pulse = useRef(new Animated.Value(1)).current;
+  const rankColor = RANK_COLORS[event.min_rank] ?? null;
 
   useEffect(() => {
     if (!urgent) return;
     const anim = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, { toValue: 1.06, duration: 500, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1.05, duration: 500, useNativeDriver: true }),
         Animated.timing(pulse, { toValue: 1, duration: 500, useNativeDriver: true }),
       ])
     );
@@ -130,102 +96,235 @@ function FeaturedEvent({ event, onEnter }) {
   }, [urgent]);
 
   return (
-    <View style={styles.featuredCard}>
-      {/* halftone dots */}
-      <View style={styles.featuredDots} pointerEvents="none">
-        {Array.from({ length: 20 }).map((_, i) => (
-          <View key={i} style={styles.dot} />
-        ))}
-      </View>
-
-      <View style={styles.featuredTopRow}>
-        <View style={[styles.tag, { backgroundColor: event.tagColor }]}>
-          <Text style={styles.tagText}>{event.tag}</Text>
+    <View style={styles.eventHeader}>
+      {/* Tag row */}
+      <View style={styles.eventTagRow}>
+        <View style={styles.liveTag}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveTagText}>LIVE</Text>
         </View>
-        <Text style={styles.featuredParticipants}>
-          {event.participants.toLocaleString()} cooking
-        </Text>
-      </View>
-
-      <Text style={styles.featuredTitle}>{event.title}</Text>
-      <Text style={styles.featuredSubtitle}>{event.subtitle}</Text>
-
-      <View style={styles.featuredMeta}>
-        <View style={styles.xpBadge}>
-          <Text style={styles.xpBadgeText}>+{event.xpReward} XP</Text>
-        </View>
-        <Text style={styles.featuredPrize}>{event.prizeLabel}</Text>
-      </View>
-
-      {/* countdown */}
-      <View style={[styles.countdownRow, urgent && styles.countdownUrgent]}>
-        <Text style={[styles.countdownLabel, urgent && { color: colors.primary }]}>
-          ENDS IN
-        </Text>
-        <Animated.Text
-          style={[
-            styles.countdownValue,
-            urgent && { color: colors.primary, transform: [{ scale: pulse }] },
-          ]}
-        >
-          {`${pad(h)}:${pad(m)}:${pad(s)}`}
-        </Animated.Text>
-      </View>
-
-      <TouchableOpacity style={styles.enterBtn} onPress={onEnter} activeOpacity={0.85}>
-        <Text style={styles.enterBtnText}>ENTER NOW</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// ─── Upcoming event card ───────────────────────────────────────────────────────
-
-function UpcomingCard({ event }) {
-  return (
-    <View style={styles.upcomingCard}>
-      <View style={styles.upcomingTopRow}>
-        <View style={[styles.tag, { backgroundColor: 'transparent', borderColor: event.tagColor, borderWidth: borders.thin }]}>
-          <Text style={[styles.tagText, { color: event.tagColor }]}>{event.tag}</Text>
-        </View>
-        {event.minRank && (
-          <View style={[styles.rankGate, { borderColor: event.minRankColor }]}>
-            <Text style={[styles.rankGateText, { color: event.minRankColor }]}>
-              {event.minRank}+
-            </Text>
+        <Text style={styles.entryCount}>{entryCount} {entryCount === 1 ? 'ENTRY' : 'ENTRIES'}</Text>
+        {rankColor && (
+          <View style={[styles.rankGate, { borderColor: rankColor }]}>
+            <Text style={[styles.rankGateText, { color: rankColor }]}>{event.min_rank}+</Text>
           </View>
         )}
       </View>
 
-      <Text style={styles.upcomingTitle}>{event.title}</Text>
-      <Text style={styles.upcomingSubtitle}>{event.subtitle}</Text>
+      {/* Title */}
+      <Text style={styles.eventTitle}>{event.title}</Text>
+      {event.subtitle ? <Text style={styles.eventSubtitle}>{event.subtitle}</Text> : null}
 
-      <View style={styles.upcomingFooter}>
-        <Text style={styles.startsIn}>{formatStartsIn(event.startsIn)}</Text>
-        <View style={styles.xpBadgeSmall}>
-          <Text style={styles.xpBadgeSmallText}>+{event.xpReward} XP</Text>
+      {/* XP reward */}
+      <View style={styles.eventXpRow}>
+        <View style={styles.xpBadge}>
+          <Ionicons name="star" size={11} color={colors.background} />
+          <Text style={styles.xpBadgeText}>+{event.xp_reward} XP</Text>
         </View>
-        <Text style={styles.upcomingParticipants}>{event.participants} joined</Text>
+        {event.prize_label ? <Text style={styles.prizeLabel}>{event.prize_label}</Text> : null}
+      </View>
+
+      {/* Countdown */}
+      <View style={[styles.countdown, urgent && styles.countdownUrgent]}>
+        <Text style={[styles.countdownLabel, urgent && { color: colors.primary }]}>ENDS IN</Text>
+        <Animated.Text style={[styles.countdownValue, urgent && { color: colors.primary, transform: [{ scale: pulse }] }]}>
+          {h > 0 ? `${h}h ${pad(m)}m` : `${pad(m)}m ${pad(s)}s`}
+        </Animated.Text>
+      </View>
+
+      {/* Rules */}
+      <View style={styles.rulesCard}>
+        <View style={styles.rulesHeader}>
+          <Ionicons name="trophy" size={11} color={colors.gold} />
+          <Text style={styles.rulesTitle}>HOW TO WIN</Text>
+        </View>
+        <View style={styles.ruleRow}>
+          <View style={styles.ruleBullet}><Text style={styles.ruleBulletText}>1</Text></View>
+          <Text style={styles.ruleText}>Cook something that fits the theme and submit your best cook</Text>
+        </View>
+        <View style={styles.ruleRow}>
+          <View style={styles.ruleBullet}><Text style={styles.ruleBulletText}>2</Text></View>
+          <Text style={styles.ruleText}>Get votes from the community — the most voted cook wins</Text>
+        </View>
+        <View style={styles.ruleRow}>
+          <View style={styles.ruleBullet}><Text style={styles.ruleBulletText}>3</Text></View>
+          <Text style={styles.ruleText}>Winner is decided when the timer hits zero{rankColor ? ` · ${event.min_rank}+ only` : ''}</Text>
+        </View>
+      </View>
+
+      {/* Enter button */}
+      {hasEntered ? (
+        <View style={styles.youCookedBanner}>
+          <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+          <Text style={styles.youCookedText}>YOU COOKED!</Text>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.enterBtn} onPress={onEnter} activeOpacity={0.85}>
+          <Ionicons name="flame" size={18} color={colors.white} />
+          <Text style={styles.enterBtnText}>ENTER NOW</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Entries heading */}
+      {entryCount > 0 && (
+        <View style={styles.entriesHeading}>
+          <Text style={styles.entriesHeadingText}>ENTRIES</Text>
+          <View style={styles.entriesHeadingLine} />
+          <Text style={styles.entriesHeadingNote}>sorted by votes · winner gets trophy</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ─── Feed-style entry card ────────────────────────────────────────────────────
+
+function EntryCard({ entry, position, userId }) {
+  const navigation = useNavigation();
+  const profile = entry.profiles || {};
+  const rankColor = RANK_COLORS[profile.rank] || colors.accent;
+  const isLeading = position === 0;
+  const photo = entry.photo_urls?.[entry.photo_urls.length - 1] ?? null;
+  const [voted, setVoted] = useState(false);
+  const [voteCount, setVoteCount] = useState(entry.votes?.length ?? 0);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!userId) return;
+    setVoted((entry.votes || []).some(v => v.user_id === userId));
+  }, [userId]);
+
+  async function handleVote() {
+    if (!userId) return;
+    const next = !voted;
+    setVoted(next);
+    setVoteCount(c => c + (next ? 1 : -1));
+    Animated.sequence([
+      Animated.timing(scaleAnim, { toValue: 1.35, duration: 120, useNativeDriver: true }),
+      Animated.spring(scaleAnim, { toValue: 1, friction: 4, useNativeDriver: true }),
+    ]).start();
+    try {
+      if (next) await voteCook(entry.id, userId);
+      else await unvoteCook(entry.id, userId);
+    } catch {
+      setVoted(!next);
+      setVoteCount(c => c + (next ? -1 : 1));
+    }
+  }
+
+  return (
+    <TouchableOpacity
+      style={[styles.entryCard, { height: CARD_HEIGHT }, isLeading && styles.entryCardLeading]}
+      onPress={() => navigation.push('PostDetail', { cookId: entry.id })}
+      activeOpacity={0.95}
+    >
+      {/* Photo */}
+      <View style={StyleSheet.absoluteFill}>
+        {photo ? (
+          <Image source={{ uri: photo }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        ) : (
+          <View style={[StyleSheet.absoluteFill, styles.entryPlaceholder]}>
+            <Ionicons name="restaurant" size={48} color="#1a1a1a" />
+          </View>
+        )}
+      </View>
+
+      {/* Leading overlay stripe */}
+      {isLeading && <View style={styles.leadingStripe} />}
+
+      {/* Position badge */}
+      <View style={[styles.posBadge, isLeading && styles.posBadgeLeading]}>
+        {isLeading
+          ? <Ionicons name="trophy" size={12} color={colors.background} />
+          : <Text style={styles.posBadgeText}>#{position + 1}</Text>
+        }
+      </View>
+
+      {/* Right-side actions */}
+      <View style={styles.cardActions}>
+        <TouchableOpacity onPress={handleVote} activeOpacity={0.8}>
+          <Animated.View style={[styles.voteBtn, voted && styles.voteBtnActive, { transform: [{ scale: scaleAnim }] }]}>
+            <Ionicons
+              name={voted ? 'flame' : 'flame-outline'}
+              size={26}
+              color={voted ? colors.white : isLeading ? colors.gold : colors.primary}
+            />
+          </Animated.View>
+        </TouchableOpacity>
+        <Text style={[styles.voteCount, voted && { color: colors.primary }, isLeading && !voted && { color: colors.gold }]}>
+          {voteCount.toLocaleString()}
+        </Text>
+      </View>
+
+      {/* Bottom overlay */}
+      <View style={styles.cardOverlay}>
+        <Text style={styles.cardDish} numberOfLines={1}>{entry.dish_name}</Text>
+        <View style={styles.cardUserRow}>
+          <View style={[styles.rankTierDot, { backgroundColor: rankColor }]}>
+            <Text style={styles.rankTierDotText}>{profile.rank_tier ?? 'I'}</Text>
+          </View>
+          <Text style={styles.cardUsername}>@{profile.username}</Text>
+          <View style={[styles.rankChip, { borderColor: rankColor }]}>
+            <Text style={[styles.rankChipText, { color: rankColor }]}>{profile.rank}</Text>
+          </View>
+          <Text style={styles.cardTime}>{timeAgo(entry.created_at)}</Text>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Upcoming card ────────────────────────────────────────────────────────────
+
+function UpcomingCard({ event }) {
+  const rankColor = RANK_COLORS[event.min_rank] ?? null;
+  const h = Math.floor(event.startsIn / 3600000);
+  const d = Math.floor(h / 24);
+  const startsIn = d > 0 ? `${d}d` : `${h}h`;
+  return (
+    <View style={styles.upcomingCard}>
+      <View style={styles.upcomingTopRow}>
+        <View style={styles.upcomingTag}>
+          <Text style={styles.upcomingTagText}>SOON</Text>
+        </View>
+        <Text style={styles.upcomingStartsIn}>Starts in {startsIn}</Text>
+        {rankColor && (
+          <View style={[styles.rankGate, { borderColor: rankColor }]}>
+            <Text style={[styles.rankGateText, { color: rankColor }]}>{event.min_rank}+</Text>
+          </View>
+        )}
+      </View>
+      <Text style={styles.upcomingTitle}>{event.title}</Text>
+      {event.subtitle ? <Text style={styles.upcomingSubtitle}>{event.subtitle}</Text> : null}
+      <View style={styles.upcomingFooter}>
+        <View style={styles.xpBadgeSmall}>
+          <Text style={styles.xpBadgeSmallText}>+{event.xp_reward} XP</Text>
+        </View>
       </View>
     </View>
   );
 }
 
-// ─── Past event card ───────────────────────────────────────────────────────────
+// ─── Past card ────────────────────────────────────────────────────────────────
 
 function PastCard({ event }) {
+  const winnerRankColor = RANK_COLORS[event.winner?.rank] ?? colors.inactive;
   return (
     <View style={styles.pastCard}>
       <View style={styles.pastTopRow}>
-        <Text style={styles.pastTitle}>{event.title}</Text>
-        <View style={[styles.tag, { backgroundColor: event.tagColor }]}>
-          <Text style={styles.tagText}>{event.tag}</Text>
+        <Text style={styles.pastTitle} numberOfLines={1}>{event.title}</Text>
+        <Text style={styles.pastEnded}>{event.endedAgo}</Text>
+      </View>
+      {event.winner ? (
+        <View style={styles.pastWinner}>
+          <Ionicons name="trophy" size={11} color={colors.gold} />
+          <Text style={styles.pastWinnerDish} numberOfLines={1}>{event.winner.dishName}</Text>
+          <Text style={styles.pastWinnerBy}>by</Text>
+          <Text style={[styles.pastWinnerUser, { color: winnerRankColor }]}>@{event.winner.username}</Text>
         </View>
-      </View>
-      <View style={styles.pastFooter}>
-        <Text style={styles.pastMeta}>{event.endedAgo} · {event.participants.toLocaleString()} cooks</Text>
-        <Text style={styles.pastWinner}>🥇 @{event.winner}</Text>
-      </View>
+      ) : (
+        <Text style={styles.pastNoWinner}>no winner awarded</Text>
+      )}
     </View>
   );
 }
@@ -241,40 +340,177 @@ function SectionHeader({ title }) {
   );
 }
 
+// ─── No event state ───────────────────────────────────────────────────────────
+
+function NoEventState({ upcoming, past, onEnterUpcoming }) {
+  return (
+    <View style={styles.noEventWrap}>
+      <View style={styles.noEventIcon}>
+        <Ionicons name="trophy-outline" size={32} color={colors.border} />
+      </View>
+      <Text style={styles.noEventTitle}>NO LIVE EVENT</Text>
+      <Text style={styles.noEventSub}>Check back soon for the next competition</Text>
+
+      {upcoming.length > 0 && (
+        <>
+          <SectionHeader title="COMING UP" />
+          {upcoming.map(e => <UpcomingCard key={e.id} event={e} />)}
+        </>
+      )}
+      {past.length > 0 && (
+        <>
+          <SectionHeader title="RECENTLY ENDED" />
+          {past.map(e => <PastCard key={e.id} event={e} />)}
+        </>
+      )}
+    </View>
+  );
+}
+
 // ─── Main screen ───────────────────────────────────────────────────────────────
 
 export default function EventsScreen() {
+  const navigation = useNavigation();
+  const [live, setLive] = useState([]);
+  const [upcoming, setUpcoming] = useState([]);
+  const [past, setPast] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [entriesLoading, setEntriesLoading] = useState(false);
+  const [userId, setUserId] = useState(null);
+  const [loadingEvents, setLoadingEvents] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) setUserId(session.user.id);
+    });
+  }, []);
+
+  const loadEvents = useCallback(() => {
+    getEvents().then(data => {
+      const { live: l, upcoming: u, past: p } = classifyEvents(data);
+      setLive(l);
+      setUpcoming(u);
+      setPast(p);
+      setLoadingEvents(false);
+      p.forEach(e => { if (!e.winner_awarded) awardEventWinner(e.id).catch(() => {}); });
+    }).catch(() => setLoadingEvents(false));
+  }, []);
+
+  useFocusEffect(loadEvents);
+
+  const featured = live[0] ?? null;
+
+  useEffect(() => {
+    if (!featured) { setEntries([]); return; }
+    setEntriesLoading(true);
+    getEventEntries(featured.id)
+      .then(setEntries)
+      .catch(() => setEntries([]))
+      .finally(() => setEntriesLoading(false));
+  }, [featured?.id]);
+
+  function handleEnter() {
+    if (!featured) return;
+    navigation.navigate('Cook', {
+      eventId: featured.id,
+      eventTitle: featured.title,
+      eventXpReward: featured.xp_reward,
+    });
+  }
+
+  // FlatList data: entries only; header is ListHeaderComponent
+  const listData = useMemo(() => entries, [entries]);
+
+  const hasEntered = useMemo(
+    () => !!userId && entries.some(e => e.profiles?.id === userId),
+    [entries, userId]
+  );
+
+  const renderHeader = useMemo(() => {
+    if (!featured) return null;
+    return (
+      <>
+        <EventHeader event={featured} entryCount={entries.length} onEnter={handleEnter} hasEntered={hasEntered} />
+        {entriesLoading && (
+          <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.lg }} />
+        )}
+        {!entriesLoading && entries.length === 0 && (
+          <View style={styles.noEntriesWrap}>
+            <Text style={styles.noEntriesText}>NO ENTRIES YET — BE FIRST</Text>
+          </View>
+        )}
+      </>
+    );
+  }, [featured, entries.length, entriesLoading, hasEntered]);
+
+  const renderFooter = useMemo(() => (
+    <View style={styles.footerSection}>
+      {upcoming.length > 0 && (
+        <>
+          <SectionHeader title="COMING UP" />
+          {upcoming.map(e => <UpcomingCard key={e.id} event={e} />)}
+        </>
+      )}
+      {past.length > 0 && (
+        <>
+          <SectionHeader title="RECENTLY ENDED" />
+          {past.map(e => <PastCard key={e.id} event={e} />)}
+        </>
+      )}
+      <View style={{ height: spacing.xxl }} />
+    </View>
+  ), [upcoming, past]);
+
   return (
     <View style={styles.root}>
       {/* Top bar */}
-      <View style={styles.topBar}>
-        <Text style={styles.topBarTitle}>Events</Text>
-        <View style={styles.livePill}>
-          <View style={styles.liveDot} />
-          <Text style={styles.livePillText}>3 LIVE</Text>
+      <SafeAreaView edges={['top']} style={styles.safeTop}>
+        <View style={styles.topBar}>
+          <Text style={styles.topBarTitle}>Events</Text>
+          <View style={styles.topBarRight}>
+            {featured && (
+              <View style={styles.livePill}>
+                <View style={styles.liveDot} />
+                <Text style={styles.livePillText}>LIVE</Text>
+              </View>
+            )}
+            <VoteNotifBell />
+          </View>
         </View>
-      </View>
+      </SafeAreaView>
+      <ActiveDuelBanner />
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        <SectionHeader title="FEATURED" />
-        <FeaturedEvent event={FEATURED} onEnter={() => {}} />
-
-        <SectionHeader title="COMING UP" />
-        {UPCOMING.map((e) => (
-          <UpcomingCard key={e.id} event={e} />
-        ))}
-
-        <SectionHeader title="RECENTLY ENDED" />
-        {PAST.map((e) => (
-          <PastCard key={e.id} event={e} />
-        ))}
-
-        <View style={{ height: spacing.xxl }} />
-      </ScrollView>
+      {loadingEvents ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.primary} size="large" />
+        </View>
+      ) : !featured ? (
+        <FlatList
+          data={[]}
+          ListHeaderComponent={
+            <NoEventState upcoming={upcoming} past={past} />
+          }
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        />
+      ) : (
+        <FlatList
+          data={listData}
+          keyExtractor={item => item.id}
+          ListHeaderComponent={renderHeader}
+          ListFooterComponent={renderFooter}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item, index }) => (
+            <EntryCard
+              entry={item}
+              position={index}
+              userId={userId}
+            />
+          )}
+          ItemSeparatorComponent={() => <View style={{ height: spacing.xs }} />}
+        />
+      )}
     </View>
   );
 }
@@ -282,17 +518,15 @@ export default function EventsScreen() {
 // ─── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
+  root: { flex: 1, backgroundColor: colors.background },
+  safeTop: { backgroundColor: colors.primary },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  // top bar
   topBar: {
     backgroundColor: colors.primary,
-    paddingTop: 56,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -306,104 +540,43 @@ const styles = StyleSheet.create({
     letterSpacing: typography.letterSpacing.wide,
     textTransform: 'uppercase',
   },
+  topBarRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   livePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#000',
-    borderRadius: 20,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    gap: 5,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#000', paddingHorizontal: spacing.sm, paddingVertical: 4, gap: 5,
   },
-  liveDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.primary,
-  },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
   livePillText: {
-    color: colors.white,
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
+    color: colors.white, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
   },
 
-  // scroll
-  scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: spacing.md, paddingTop: spacing.md },
+  scrollContent: { paddingBottom: spacing.lg },
 
-  // section header
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-    marginTop: spacing.lg,
-    gap: spacing.sm,
+  // ── Event header ──────────────────────────────────────────────────────────
+  eventHeader: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: 0,
+    borderBottomWidth: borders.thin,
+    borderBottomColor: colors.border,
+    marginBottom: spacing.xs,
   },
-  sectionTitle: {
-    color: colors.inactive,
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
+  eventTagRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+  liveTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.sm, paddingVertical: 3,
   },
-  sectionLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#1f1f1f',
+  liveTagText: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  entryCount: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold, flex: 1 },
+  rankGate: {
+    borderWidth: borders.thin,
+    paddingHorizontal: 7, paddingVertical: 2,
   },
+  rankGateText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
 
-  // tag
-  tag: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 3,
-  },
-  tagText: {
-    color: '#000',
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
-  },
-
-  // featured card
-  featuredCard: {
-    backgroundColor: colors.surface,
-    borderWidth: borders.medium,
-    borderColor: colors.accent,
-    borderRadius: 4,
-    padding: spacing.md,
-    overflow: 'hidden',
-  },
-  featuredDots: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 120,
-    height: 120,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    padding: 10,
-    opacity: 0.07,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.accent,
-  },
-  featuredTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
-  },
-  featuredParticipants: {
-    color: colors.inactive,
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-  featuredTitle: {
+  eventTitle: {
     color: colors.accent,
     fontSize: typography.fontSize.display,
     fontWeight: typography.fontWeight.black,
@@ -411,181 +584,247 @@ const styles = StyleSheet.create({
     lineHeight: 38,
     marginBottom: 4,
   },
-  featuredSubtitle: {
-    color: '#888',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-    marginBottom: spacing.md,
+  eventSubtitle: {
+    color: colors.inactive, fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold, marginBottom: spacing.md,
   },
-  featuredMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
+
+  eventXpRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   xpBadge: {
-    backgroundColor: colors.success,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: colors.success, paddingHorizontal: spacing.sm, paddingVertical: 4,
   },
-  xpBadgeText: {
-    color: '#000',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wide,
+  xpBadgeText: { color: colors.background, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
+  prizeLabel: { color: colors.inactive, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+
+  countdown: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderWidth: borders.thin, borderColor: colors.border,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
   },
-  featuredPrize: {
-    color: colors.white,
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-  },
-  countdownRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: '#1a1a1a',
-    borderWidth: borders.thin,
-    borderColor: '#2a2a2a',
-    borderRadius: 4,
-    padding: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  countdownUrgent: {
-    borderColor: colors.primary,
-    backgroundColor: '#1a0000',
-  },
+  countdownUrgent: { borderColor: colors.primary, backgroundColor: '#1a0000' },
   countdownLabel: {
-    color: colors.inactive,
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
   },
   countdownValue: {
-    color: colors.white,
-    fontSize: typography.fontSize.xl,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: 2,
-    fontVariant: ['tabular-nums'],
+    color: colors.white, fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.black, letterSpacing: 2, fontVariant: ['tabular-nums'],
   },
+
+  rulesCard: {
+    borderWidth: borders.thin, borderColor: '#1f1f1f',
+    backgroundColor: colors.surface,
+    marginBottom: spacing.md,
+  },
+  rulesHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    borderBottomWidth: borders.thin, borderBottomColor: '#1f1f1f',
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+    backgroundColor: '#1a1400',
+  },
+  rulesTitle: {
+    color: colors.gold, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
+  },
+  ruleRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+  },
+  ruleBullet: {
+    width: 18, height: 18, backgroundColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1,
+  },
+  ruleBulletText: { color: colors.white, fontSize: 9, fontWeight: typography.fontWeight.black },
+  ruleText: {
+    flex: 1, color: colors.inactive, fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold, lineHeight: 18,
+  },
+
   enterBtn: {
     backgroundColor: colors.primary,
-    borderWidth: borders.medium,
-    borderColor: '#000',
-    borderRadius: 4,
-    paddingVertical: spacing.sm + 2,
-    alignItems: 'center',
+    borderWidth: borders.medium, borderColor: '#000',
+    paddingVertical: spacing.md,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+    marginBottom: spacing.md,
   },
   enterBtnText: {
-    color: colors.white,
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wider,
+    color: colors.white, fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
+  },
+  youCookedBanner: {
+    borderWidth: borders.medium, borderColor: colors.success,
+    backgroundColor: '#001a00',
+    paddingVertical: spacing.md,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  youCookedText: {
+    color: colors.success, fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
   },
 
-  // upcoming card
-  upcomingCard: {
+  entriesHeading: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingBottom: spacing.sm,
+  },
+  entriesHeadingText: {
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
+  },
+  entriesHeadingLine: { flex: 1, height: 1, backgroundColor: '#1f1f1f' },
+  entriesHeadingNote: {
+    color: '#333', fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.bold,
+  },
+
+  // ── Entry card (feed-style) ────────────────────────────────────────────────
+  entryCard: {
+    width: '100%', backgroundColor: colors.surface,
+    overflow: 'hidden', position: 'relative',
+  },
+  entryCardLeading: { borderWidth: borders.thin, borderColor: colors.gold },
+  entryPlaceholder: { backgroundColor: '#0d0d0d', alignItems: 'center', justifyContent: 'center' },
+  leadingStripe: {
+    position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+    backgroundColor: colors.gold, zIndex: 2,
+  },
+
+  posBadge: {
+    position: 'absolute', top: spacing.sm, left: spacing.sm,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderWidth: borders.thin, borderColor: '#333',
+    paddingHorizontal: spacing.sm, paddingVertical: 3,
+    zIndex: 3,
+  },
+  posBadgeLeading: { backgroundColor: colors.gold, borderColor: colors.gold },
+  posBadgeText: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
+
+  cardActions: {
+    position: 'absolute', right: spacing.sm, bottom: 80,
+    alignItems: 'center', gap: 4, zIndex: 3,
+  },
+  voteBtn: {
+    width: 48, height: 48, backgroundColor: 'rgba(0,0,0,0.6)',
+    borderWidth: borders.thin, borderColor: '#333',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  voteBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  voteCount: {
+    color: colors.white, fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.black, textAlign: 'center',
+  },
+
+  cardOverlay: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    paddingHorizontal: spacing.md, paddingBottom: spacing.md, paddingTop: spacing.xl,
+    background: 'linear-gradient(transparent, rgba(0,0,0,0.8))',
+    backgroundColor: 'transparent',
+  },
+  cardDish: {
+    color: colors.white, fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.tight,
+    marginBottom: 6,
+    textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4,
+  },
+  cardUserRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  rankTierDot: {
+    width: 18, height: 18, alignItems: 'center', justifyContent: 'center',
+  },
+  rankTierDotText: { color: '#000', fontSize: 8, fontWeight: typography.fontWeight.black },
+  cardUsername: {
+    color: 'rgba(255,255,255,0.85)', fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.black, flex: 1,
+  },
+  rankChip: {
+    borderWidth: borders.thin,
+    paddingHorizontal: 5, paddingVertical: 1,
+  },
+  rankChipText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: 0.5 },
+  cardTime: { color: 'rgba(255,255,255,0.45)', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+
+  // ── No entries ────────────────────────────────────────────────────────────
+  noEntriesWrap: {
+    marginHorizontal: spacing.md, marginBottom: spacing.md,
     backgroundColor: colors.surface,
-    borderWidth: borders.thin,
-    borderColor: '#2a2a2a',
-    borderRadius: 4,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
+    borderWidth: borders.thin, borderColor: '#1f1f1f',
+    paddingVertical: spacing.lg, alignItems: 'center',
   },
-  upcomingTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  rankGate: {
-    borderWidth: 1,
-    borderRadius: 3,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-  },
-  rankGateText: {
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wide,
-  },
-  upcomingTitle: {
-    color: colors.white,
-    fontSize: typography.fontSize.xl,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.tight,
-    marginBottom: 3,
-  },
-  upcomingSubtitle: {
-    color: '#666',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-    marginBottom: spacing.sm,
-  },
-  upcomingFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  startsIn: {
-    color: colors.inactive,
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
-    flex: 1,
-  },
-  xpBadgeSmall: {
-    backgroundColor: '#1a3a1a',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  xpBadgeSmallText: {
-    color: colors.success,
-    fontSize: typography.fontSize.xs,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.wide,
-  },
-  upcomingParticipants: {
-    color: colors.inactive,
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
+  noEntriesText: {
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
   },
 
-  // past card
-  pastCard: {
-    backgroundColor: '#0d0d0d',
-    borderWidth: borders.thin,
-    borderColor: '#1a1a1a',
-    borderRadius: 4,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    opacity: 0.75,
+  // ── No event ──────────────────────────────────────────────────────────────
+  noEventWrap: { paddingHorizontal: spacing.md, paddingTop: spacing.xl },
+  noEventIcon: {
+    width: 64, height: 64, backgroundColor: colors.surface,
+    borderWidth: borders.thin, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center', marginBottom: spacing.md,
   },
-  pastTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  noEventTitle: {
+    color: colors.border, fontSize: typography.fontSize.lg,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
     marginBottom: spacing.xs,
   },
-  pastTitle: {
-    color: '#666',
-    fontSize: typography.fontSize.lg,
-    fontWeight: typography.fontWeight.black,
-    letterSpacing: typography.letterSpacing.tight,
+  noEventSub: {
+    color: colors.inactive, fontSize: typography.fontSize.sm,
+    fontWeight: typography.fontWeight.bold, marginBottom: spacing.xl,
   },
-  pastFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+
+  // ── Footer (upcoming / past) ──────────────────────────────────────────────
+  footerSection: { paddingHorizontal: spacing.md },
+
+  sectionHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    marginTop: spacing.lg, marginBottom: spacing.sm,
   },
-  pastMeta: {
-    color: '#444',
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.bold,
+  sectionTitle: {
+    color: colors.inactive, fontSize: typography.fontSize.xs,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider,
   },
-  pastWinner: {
-    color: colors.gold,
-    fontSize: typography.fontSize.sm,
-    fontWeight: typography.fontWeight.black,
+  sectionLine: { flex: 1, height: 1, backgroundColor: '#1f1f1f' },
+
+  // Upcoming
+  upcomingCard: {
+    backgroundColor: colors.surface,
+    borderWidth: borders.thin, borderColor: '#1f1f1f',
+    padding: spacing.md, marginBottom: spacing.sm,
   },
+  upcomingTopRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs },
+  upcomingTag: {
+    backgroundColor: '#1a2600', borderWidth: borders.thin, borderColor: '#00C47A',
+    paddingHorizontal: spacing.sm, paddingVertical: 2,
+  },
+  upcomingTagText: { color: '#00C47A', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  upcomingStartsIn: { flex: 1, color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  upcomingTitle: {
+    color: colors.white, fontSize: typography.fontSize.xl,
+    fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.tight, marginBottom: 3,
+  },
+  upcomingSubtitle: { color: '#555', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, marginBottom: spacing.sm },
+  upcomingFooter: { flexDirection: 'row', alignItems: 'center' },
+  xpBadgeSmall: {
+    backgroundColor: '#1a3a1a',
+    borderWidth: borders.thin, borderColor: colors.success,
+    paddingHorizontal: 7, paddingVertical: 2,
+  },
+  xpBadgeSmallText: { color: colors.success, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
+
+  // Past
+  pastCard: {
+    backgroundColor: '#0d0d0d',
+    borderWidth: borders.thin, borderColor: '#1a1a1a',
+    padding: spacing.md, marginBottom: spacing.sm, opacity: 0.75,
+  },
+  pastTopRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs },
+  pastTitle: { flex: 1, color: '#555', fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black },
+  pastEnded: { color: '#333', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  pastWinner: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  pastWinnerDish: { flex: 1, color: '#666', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  pastWinnerBy: { color: '#333', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  pastWinnerUser: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
+  pastNoWinner: { color: '#333', fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
 });

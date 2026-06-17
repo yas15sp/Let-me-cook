@@ -1,9 +1,14 @@
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, StatusBar, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, StatusBar, Animated, TextInput, Alert, ActivityIndicator, AppState } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRoute, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { colors, spacing, typography, borders } from '../theme';
+import { submitCook, getProfile, getMyDuels, getDuelCooks } from '../lib/api';
+import { rankFromXp, RANK_COLORS } from '../lib/xp';
+import { supabase } from '../lib/supabase';
+import VoteNotifBell from '../components/VoteNotifBell';
 
 const { width: W } = Dimensions.get('window');
 const BRACKET = 28;
@@ -22,7 +27,6 @@ const BOOSTS = [
   { label: 'CAPTION', xp: 10, icon: 'text' },
 ];
 
-const USER = { rank: 'Chef', level: 12, rankColor: '#E8001C' };
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
@@ -31,21 +35,56 @@ function pad(n) { return String(n).padStart(2, '0'); }
 function useStopwatch() {
   const [elapsed, setElapsed] = useState(0);
   const running = useRef(false);
+  const startTimeRef = useRef(null); // wall-clock ms when timer last started
   const interval = useRef(null);
+
+  // elapsed is always derived from wall clock, not a counter
+  const calcElapsed = () =>
+    startTimeRef.current !== null
+      ? Math.floor((Date.now() - startTimeRef.current) / 1000)
+      : 0;
+
   const start = () => {
     if (running.current) return;
     running.current = true;
-    interval.current = setInterval(() => setElapsed(s => s + 1), 1000);
+    // shift start back by any already-elapsed time (supports resume)
+    startTimeRef.current = Date.now() - elapsed * 1000;
+    interval.current = setInterval(() => setElapsed(calcElapsed()), 500);
   };
+
+  const stop = () => {
+    if (!running.current) return;
+    running.current = false;
+    clearInterval(interval.current);
+    const final = calcElapsed();
+    setElapsed(final);
+    startTimeRef.current = null;
+    return final;
+  };
+
   const reset = () => {
     running.current = false;
     clearInterval(interval.current);
+    startTimeRef.current = null;
     setElapsed(0);
   };
-  useEffect(() => () => clearInterval(interval.current), []);
+
+  // Snap display immediately when app comes back to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active' && running.current && startTimeRef.current !== null) {
+        setElapsed(calcElapsed());
+      }
+    });
+    return () => {
+      sub.remove();
+      clearInterval(interval.current);
+    };
+  }, []);
+
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
-  return { display: `${pad(mins)}:${pad(secs)}`, elapsed, start, reset };
+  return { display: `${pad(mins)}:${pad(secs)}`, elapsed, start, stop, reset };
 }
 
 // ─── Corner brackets ──────────────────────────────────────────────────────────
@@ -99,7 +138,7 @@ function PhotoStrip({ captures }) {
 
 // ─── Idle screen ──────────────────────────────────────────────────────────────
 
-function IdleScreen({ onStart }) {
+function IdleScreen({ onStart, eventTitle, eventXpReward, duelOpponentName, duelSubmitted, rank, level, rankColor, inspiredByDishName, inspiredByUsername }) {
   return (
     <SafeAreaView style={styles.idleContainer} edges={['top', 'bottom']}>
       <View style={styles.idleHalftone} pointerEvents="none">
@@ -110,13 +149,56 @@ function IdleScreen({ onStart }) {
 
       <View style={styles.idleInner}>
         <View style={styles.idleRankRow}>
-          <View style={[styles.idleRankChip, { borderColor: USER.rankColor }]}>
-            <Text style={[styles.idleRankChipText, { color: USER.rankColor }]}>{USER.rank}</Text>
+          <View style={[styles.idleRankChip, { borderColor: rankColor }]}>
+            <Text style={[styles.idleRankChipText, { color: rankColor }]}>{rank}</Text>
           </View>
           <View style={styles.idleLevelChip}>
-            <Text style={styles.idleLevelText}>LV{USER.level}</Text>
+            <Text style={styles.idleLevelText}>LV{level}</Text>
           </View>
+          <VoteNotifBell />
         </View>
+
+        {/* Duel banner */}
+        {duelOpponentName && (
+          <View style={styles.duelBanner}>
+            <Ionicons name="flash" size={13} color={colors.primary} />
+            <Text style={styles.duelBannerText} numberOfLines={1}>
+              DUEL vs @{duelOpponentName}
+            </Text>
+            {duelSubmitted ? (
+              <View style={styles.duelBannerSubmitted}>
+                <Text style={styles.duelBannerSubmittedText}>SUBMITTED</Text>
+              </View>
+            ) : (
+              <View style={styles.duelBannerActive}>
+                <Text style={styles.duelBannerActiveText}>ACTIVE</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {inspiredByDishName && (
+          <View style={styles.inspireBanner}>
+            <Ionicons name="flame" size={13} color={colors.accent} />
+            <Text style={styles.inspireBannerText} numberOfLines={1}>
+              Inspired by @{inspiredByUsername} · {inspiredByDishName}
+            </Text>
+            <View style={styles.inspireBannerXp}>
+              <Text style={styles.inspireBannerXpText}>+30 XP</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Event banner */}
+        {eventTitle && (
+          <View style={styles.eventBanner}>
+            <Ionicons name="star" size={13} color={colors.gold} />
+            <Text style={styles.eventBannerText} numberOfLines={1}>{eventTitle}</Text>
+            <View style={styles.eventBannerXp}>
+              <Text style={styles.eventBannerXpText}>+{eventXpReward} XP</Text>
+            </View>
+          </View>
+        )}
 
         <View style={styles.idleTitleRow}>
           <View style={styles.idleAccentBar} />
@@ -160,10 +242,17 @@ function IdleScreen({ onStart }) {
           <Text style={styles.idleXpValue}>+30 XP</Text>
         </View>
 
-        <TouchableOpacity style={styles.startBtn} onPress={onStart} activeOpacity={0.85}>
-          <Ionicons name="flame" size={18} color={colors.white} />
-          <Text style={styles.startBtnText}>START COOKING</Text>
-        </TouchableOpacity>
+        {duelSubmitted ? (
+          <View style={styles.duelSubmittedBtn}>
+            <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+            <Text style={styles.duelSubmittedBtnText}>COOK SUBMITTED</Text>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.startBtn} onPress={onStart} activeOpacity={0.85}>
+            <Ionicons name="flame" size={18} color={colors.white} />
+            <Text style={styles.startBtnText}>START COOKING</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -171,7 +260,7 @@ function IdleScreen({ onStart }) {
 
 // ─── Video capture overlay ────────────────────────────────────────────────────
 
-function VideoOverlay({ cameraRef, insets, onRecorded, onSkip }) {
+function VideoOverlay({ cameraRef, insets, onRecorded, onSkip, cameraReady }) {
   const [isRecording, setIsRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef(null);
@@ -254,15 +343,17 @@ function VideoOverlay({ cameraRef, insets, onRecorded, onSkip }) {
       <View style={{ flex: 1 }} />
 
       {/* Record button */}
-      <TouchableOpacity onPress={handleRecord} activeOpacity={0.85}>
-        <View style={[styles.videoRecordRing, isRecording && styles.videoRecordRingActive]}>
-          {isRecording
-            ? <View style={styles.videoStopIcon} />
-            : <View style={styles.videoRecordIcon} />
+      <TouchableOpacity onPress={handleRecord} activeOpacity={0.85} disabled={!cameraReady || isRecording === null}>
+        <View style={[styles.videoRecordRing, isRecording && styles.videoRecordRingActive, !cameraReady && styles.videoRecordRingWaiting]}>
+          {!cameraReady
+            ? <ActivityIndicator color={colors.white} size="large" />
+            : isRecording
+              ? <View style={styles.videoStopIcon} />
+              : <View style={styles.videoRecordIcon} />
           }
         </View>
       </TouchableOpacity>
-      <Text style={styles.videoHint}>{isRecording ? 'TAP TO STOP' : 'TAP TO RECORD'}</Text>
+      <Text style={styles.videoHint}>{!cameraReady ? 'GETTING READY...' : isRecording ? 'TAP TO STOP' : 'TAP TO RECORD'}</Text>
 
       {/* Progress bar */}
       <View style={styles.videoProgressTrack}>
@@ -286,11 +377,21 @@ function VideoOverlay({ cameraRef, insets, onRecorded, onSkip }) {
 
 const FRAME_COLORS = ['#FFB800', '#E8001C', '#00C47A'];
 
-function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDiscard }) {
+function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, dishName, setDishName, caption, setCaption, sharing, onShare, onDiscard, onVideoRetake, rank, level, ingredients, onAddIngredient, onRemoveIngredient }) {
   const insets = useSafeAreaInsets();
   const baseXP = 120;
   const boostXP = BOOSTS.filter(b => activeBoosts.includes(b.label)).reduce((s, b) => s + b.xp, 0);
-  const totalXP = baseXP + boostXP;
+  const videoXP = videoUri ? 30 : 0;
+  const ingredientsXP = ingredients.length > 0 ? 20 : 0;
+  const totalXP = baseXP + boostXP + videoXP + ingredientsXP;
+
+  const [ingredientInput, setIngredientInput] = useState('');
+  function handleAddIngredient() {
+    const trimmed = ingredientInput.trim();
+    if (!trimmed) return;
+    onAddIngredient(trimmed);
+    setIngredientInput('');
+  }
 
   return (
     <View style={[styles.reviewContainer, { paddingTop: insets.top + spacing.md, paddingBottom: insets.bottom + spacing.md }]}>
@@ -300,6 +401,61 @@ function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDi
           <Text style={styles.reviewDoneBadgeText}>COOK COMPLETE</Text>
         </View>
         <Text style={styles.reviewTitle}>AUTO-CLIP{'\n'}READY</Text>
+      </View>
+
+      <TextInput
+        style={styles.dishInput}
+        placeholder="NAME YOUR DISH..."
+        placeholderTextColor={colors.inactive}
+        value={dishName}
+        onChangeText={setDishName}
+        autoCapitalize="characters"
+        returnKeyType="done"
+        maxLength={60}
+      />
+      {activeBoosts.includes('CAPTION') && (
+        <TextInput
+          style={styles.captionInput}
+          placeholder="ADD A CAPTION..."
+          placeholderTextColor={colors.inactive}
+          value={caption}
+          onChangeText={setCaption}
+          autoCapitalize="sentences"
+          returnKeyType="done"
+          maxLength={120}
+        />
+      )}
+
+      {/* Ingredients */}
+      <View style={styles.ingredientsSection}>
+        <View style={styles.ingredientsSectionHeader}>
+          <Text style={styles.ingredientsSectionTitle}>INGREDIENTS</Text>
+          <Text style={styles.ingredientsSectionOptional}>optional · +20 XP</Text>
+        </View>
+        {ingredients.map((ing, i) => (
+          <View key={i} style={styles.ingredientItem}>
+            <Text style={styles.ingredientBullet}>•</Text>
+            <Text style={styles.ingredientItemText} numberOfLines={1}>{ing}</Text>
+            <TouchableOpacity onPress={() => onRemoveIngredient(i)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={13} color={colors.inactive} />
+            </TouchableOpacity>
+          </View>
+        ))}
+        <View style={styles.ingredientInputRow}>
+          <TextInput
+            style={styles.ingredientInput}
+            placeholder="Add ingredient..."
+            placeholderTextColor={colors.inactive}
+            value={ingredientInput}
+            onChangeText={setIngredientInput}
+            onSubmitEditing={handleAddIngredient}
+            returnKeyType="done"
+            autoCapitalize="sentences"
+          />
+          <TouchableOpacity style={styles.ingredientAddBtn} onPress={handleAddIngredient} activeOpacity={0.8}>
+            <Ionicons name="add" size={18} color={colors.background} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Frames — 3 photos + optional video */}
@@ -315,8 +471,8 @@ function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDi
               <Ionicons name="restaurant" size={28} color={FRAME_COLORS[i]} style={{ opacity: 0.4 }} />
             </View>
             <View style={[styles.reviewWatermark, { backgroundColor: `${FRAME_COLORS[i]}CC` }]}>
-              <Text style={styles.reviewWatermarkRank}>{USER.rank}</Text>
-              <Text style={styles.reviewWatermarkLevel}>LV{USER.level}</Text>
+              <Text style={styles.reviewWatermarkRank}>{rank}</Text>
+              <Text style={styles.reviewWatermarkLevel}>LV{level}</Text>
             </View>
             <Text style={styles.reviewFrameLabel}>{stage}</Text>
           </View>
@@ -340,12 +496,17 @@ function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDi
             <Text style={styles.reviewFrameLabel}>CLIP</Text>
           </View>
         ) : (
-          <View style={[styles.reviewFrame, styles.reviewNoVideoFrame]}>
+          <TouchableOpacity
+            style={[styles.reviewFrame, styles.reviewNoVideoFrame]}
+            onPress={onVideoRetake}
+            activeOpacity={0.75}
+          >
             <View style={styles.reviewFrameInner}>
-              <Ionicons name="videocam-off-outline" size={22} color={colors.border} />
+              <Ionicons name="videocam-outline" size={22} color={colors.inactive} />
+              <Text style={styles.reviewRetakeLabel}>TAP TO{'\n'}RECORD</Text>
             </View>
             <Text style={styles.reviewFrameLabel}>NO CLIP</Text>
-          </View>
+          </TouchableOpacity>
         )}
       </View>
 
@@ -367,32 +528,18 @@ function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDi
         </View>
       </View>
 
-      {/* Verification */}
-      <View style={styles.reviewVerification}>
-        <View style={styles.reviewVerifyRow}>
-          <Ionicons name="scan" size={14} color={colors.inactive} />
-          <Text style={styles.reviewVerifyText}>AI dish recognition</Text>
-          <Text style={styles.reviewVerifyStatus}>PENDING</Text>
-        </View>
-        <View style={styles.reviewVerifyRow}>
-          <Ionicons name="time" size={14} color={colors.success} />
-          <Text style={styles.reviewVerifyText}>Timestamp window</Text>
-          <Text style={[styles.reviewVerifyStatus, { color: colors.success }]}>PASSED</Text>
-        </View>
-        <View style={styles.reviewVerifyRow}>
-          <Ionicons name="people" size={14} color={colors.inactive} />
-          <Text style={styles.reviewVerifyText}>Community jury</Text>
-          <Text style={styles.reviewVerifyStatus}>OPEN</Text>
-        </View>
-      </View>
-
-      <TouchableOpacity style={styles.shareBtn} onPress={onShare} activeOpacity={0.85}>
-        <Ionicons name="share-social" size={18} color={colors.background} />
-        <Text style={styles.shareBtnText}>SHARE TO FEED</Text>
+      <TouchableOpacity style={[styles.shareBtn, sharing && { opacity: 0.7 }]} onPress={onShare} activeOpacity={0.85} disabled={sharing}>
+        {sharing
+          ? <ActivityIndicator color={colors.background} size="small" />
+          : <Ionicons name="share-social" size={18} color={colors.background} />
+        }
+        <Text style={styles.shareBtnText}>{sharing ? 'UPLOADING...' : 'SHARE TO FEED'}</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={styles.discardBtn} onPress={onDiscard}>
-        <Text style={styles.discardBtnText}>DISCARD</Text>
-      </TouchableOpacity>
+      {!sharing && (
+        <TouchableOpacity style={styles.discardBtn} onPress={onDiscard}>
+          <Text style={styles.discardBtnText}>DISCARD</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -400,24 +547,70 @@ function ReviewScreen({ captures, elapsed, activeBoosts, videoUri, onShare, onDi
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function CookScreen({ navigation }) {
+  const route = useRoute();
+  const eventId = route.params?.eventId ?? null;
+  const eventTitle = route.params?.eventTitle ?? null;
+  const eventXpReward = route.params?.eventXpReward ?? 0;
+  const inspiredByCookId   = route.params?.inspiredByCookId   ?? null;
+  const inspiredByUserId   = route.params?.inspiredByUserId   ?? null;
+  const inspiredByUsername = route.params?.inspiredByUsername ?? null;
+  const inspiredByDishName = route.params?.inspiredByDishName ?? null;
+
+  const [profile, setProfile] = useState(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState('idle'); // idle | session | video | review
   const [stage, setStage] = useState(0);
-  const [captures, setCaptures] = useState([false, false, false]);
+  const [captures, setCaptures] = useState([null, null, null]);
   const [activeBoosts, setActiveBoosts] = useState([]);
   const [videoUri, setVideoUri] = useState(null);
   const [facing, setFacing] = useState('back');
   const [takingSelfie, setTakingSelfie] = useState(false);
+  const [dishName, setDishName] = useState('');
+  const [caption, setCaption] = useState('');
+  const [sharing, setSharing] = useState(false);
+  const [ingredients, setIngredients] = useState([]);
+  const [activeDuel, setActiveDuel] = useState(null);
+  const [duelOpponentName, setDuelOpponentName] = useState(null);
+  const [duelSubmitted, setDuelSubmitted] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const activeDuelIdRef = useRef(null);
   const shutterScale = useRef(new Animated.Value(1)).current;
+  const modeTransitionOpacity = useRef(new Animated.Value(0)).current;
   const stopwatch = useStopwatch();
   const cameraRef = useRef(null);
   const insets = useSafeAreaInsets();
+
+  useFocusEffect(useCallback(() => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) return;
+      const uid = session.user.id;
+      try {
+        const prof = await getProfile(uid);
+        setProfile(prof);
+        const duels = await getMyDuels(uid);
+        const active = duels.find(d => d.status === 'active') || null;
+        setActiveDuel(active);
+        activeDuelIdRef.current = active?.id ?? null;
+        if (active) {
+          const isChallenger = active.challenger_id === uid;
+          const opp = isChallenger ? active.opponent : active.challenger;
+          setDuelOpponentName(opp?.username ?? null);
+          const cooks = await getDuelCooks(active.id);
+          setDuelSubmitted(cooks.some(c => c.user_id === uid));
+        } else {
+          setDuelOpponentName(null);
+          setDuelSubmitted(false);
+        }
+      } catch {}
+    });
+  }, []));
 
   const handleStart = async () => {
     if (!permission?.granted) {
       const res = await requestPermission();
       if (!res.granted) return;
     }
+    setCameraReady(false);
     setPhase('session');
     stopwatch.start();
   };
@@ -429,20 +622,29 @@ export default function CookScreen({ navigation }) {
     ]).start();
   };
 
-  const handleCapture = () => {
+  const handleCapture = async () => {
     animateShutter();
+    const photo = await cameraRef.current?.takePictureAsync({ quality: 0.8 });
+    if (!photo?.uri) return; // camera not ready — let user tap again
     if (takingSelfie) {
       setTakingSelfie(false);
       setFacing('back');
       setActiveBoosts(prev => prev.includes('SELFIE') ? prev : [...prev, 'SELFIE']);
       return;
     }
-    const next = captures.map((c, i) => i === stage ? true : c);
+    const next = captures.map((c, i) => i === stage ? photo.uri : c);
     setCaptures(next);
     if (stage < 2) {
       setStage(s => s + 1);
     } else {
+      stopwatch.stop();
+      // Fade to black briefly to mask the picture→video mode restart
+      setCameraReady(false);
+      modeTransitionOpacity.setValue(1);
       setPhase('video');
+      Animated.timing(modeTransitionOpacity, {
+        toValue: 0, duration: 400, delay: 200, useNativeDriver: true,
+      }).start();
     }
   };
 
@@ -473,6 +675,12 @@ export default function CookScreen({ navigation }) {
     setPhase('review');
   };
 
+  const handleRetakeVideo = () => {
+    setVideoUri(null);
+    setCameraReady(false);
+    setPhase('video');
+  };
+
   const toggleBoost = (label) => {
     setActiveBoosts(prev =>
       prev.includes(label) ? prev.filter(b => b !== label) : [...prev, label]
@@ -482,26 +690,85 @@ export default function CookScreen({ navigation }) {
   const handleDiscard = () => {
     setPhase('idle');
     setStage(0);
-    setCaptures([false, false, false]);
+    setCaptures([null, null, null]);
     setActiveBoosts([]);
     setVideoUri(null);
     setFacing('back');
     setTakingSelfie(false);
+    setDishName('');
+    setCaption('');
+    setIngredients([]);
     stopwatch.reset();
   };
 
-  const handleShare = () => {
-    handleDiscard();
-    navigation.navigate('RankUp', {
-      fromRank: 'Gold Cook',
-      fromLevel: 'II',
-      toRank: 'Chef',
-      toLevel: 'I',
-      xpEarned: 240,
-    });
+  const handleShare = async () => {
+    if (!dishName.trim()) {
+      Alert.alert('Name your dish', 'Enter a dish name before sharing.');
+      return;
+    }
+    setSharing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Not logged in');
+
+      const baseXP = 120;
+      const boostXP = BOOSTS.filter(b => activeBoosts.includes(b.label)).reduce((s, b) => s + b.xp, 0);
+      const videoXP = videoUri ? 30 : 0;
+      const ingredientsXP = ingredients.length > 0 ? 20 : 0;
+      const inspirationXP = inspiredByCookId ? 30 : 0;
+      const baseAmount = baseXP + boostXP + videoXP + ingredientsXP + inspirationXP;
+
+      const profile = await getProfile(session.user.id);
+      const oldXp = profile.xp ?? 0;
+      const before = rankFromXp(oldXp);
+
+      const cookResult = await submitCook({
+        userId: session.user.id,
+        dishName: dishName.trim(),
+        caption: caption.trim() || null,
+        photoUris: captures.filter(Boolean),
+        videoUri,
+        cookTimeSecs: stopwatch.elapsed,
+        boosts: activeBoosts,
+        baseAmount,
+        eventId,
+        duelId: activeDuelIdRef.current,
+        ingredients,
+        inspiredByCookId,
+        inspiredByUserId,
+        inspiredByDishName,
+      });
+
+      const actualXp = cookResult?.xp_earned ?? baseAmount;
+      const after = rankFromXp(oldXp + actualXp);
+      const rankUpParams = (before.rank !== after.rank || before.tier !== after.tier)
+        ? { fromRank: before.rank, fromLevel: before.tier, toRank: after.rank, toLevel: after.tier, xpEarned: actualXp }
+        : null;
+
+      const bonusXP = actualXp - baseAmount;
+      const xpBreakdown = [
+        { label: 'BASE COOK', xp: baseXP },
+        ...(boostXP > 0 ? [{ label: 'BOOSTS', xp: boostXP }] : []),
+        ...(videoXP > 0 ? [{ label: 'VIDEO CLIP', xp: videoXP }] : []),
+        ...(ingredientsXP > 0 ? [{ label: 'INGREDIENTS', xp: ingredientsXP }] : []),
+        ...(inspirationXP > 0 ? [{ label: 'INSPIRED BY', xp: inspirationXP }] : []),
+        ...(bonusXP > 0 ? [{ label: 'STREAK / EVENT BONUS', xp: bonusXP }] : []),
+      ];
+
+      const name = dishName.trim();
+      handleDiscard();
+      navigation.navigate('CookSuccess', { dishName: name, xpEarned: actualXp, rankUpParams, inspiredByUsername, xpBreakdown });
+    } catch (e) {
+      Alert.alert('Upload failed', e.message);
+      setSharing(false);
+    }
   };
 
-  if (phase === 'idle') return <IdleScreen onStart={handleStart} />;
+  const userRank = profile?.rank ?? '—';
+  const userLevel = profile?.level ?? '—';
+  const userRankColor = RANK_COLORS[profile?.rank] || colors.primary;
+
+  if (phase === 'idle') return <IdleScreen onStart={handleStart} eventTitle={eventTitle} eventXpReward={eventXpReward} duelOpponentName={duelOpponentName} duelSubmitted={duelSubmitted} rank={userRank} level={userLevel} rankColor={userRankColor} inspiredByDishName={inspiredByDishName} inspiredByUsername={inspiredByUsername} />;
 
   if (phase === 'review') {
     return (
@@ -510,8 +777,19 @@ export default function CookScreen({ navigation }) {
         elapsed={stopwatch.elapsed}
         activeBoosts={activeBoosts}
         videoUri={videoUri}
+        dishName={dishName}
+        setDishName={setDishName}
+        caption={caption}
+        setCaption={setCaption}
+        sharing={sharing}
         onShare={handleShare}
         onDiscard={handleDiscard}
+        onVideoRetake={handleRetakeVideo}
+        rank={userRank}
+        level={userLevel}
+        ingredients={ingredients}
+        onAddIngredient={(ing) => setIngredients(prev => [...prev, ing])}
+        onRemoveIngredient={(i) => setIngredients(prev => prev.filter((_, idx) => idx !== i))}
       />
     );
   }
@@ -523,8 +801,17 @@ export default function CookScreen({ navigation }) {
   return (
     <View style={styles.sessionContainer}>
       <StatusBar barStyle="light-content" />
-      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={facing} mode={cameraMode} />
+      <CameraView
+        key={phase === 'video' ? 'video-mode' : 'picture-mode'}
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        facing={facing}
+        mode={cameraMode}
+        onCameraReady={() => setCameraReady(true)}
+      />
       <View style={styles.sessionDim} />
+      {/* Masks the camera restart when switching picture→video mode */}
+      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: modeTransitionOpacity }]} pointerEvents="none" />
 
       {/* ── Session overlay ── */}
       {phase === 'session' && (
@@ -627,6 +914,7 @@ export default function CookScreen({ navigation }) {
           insets={insets}
           onRecorded={handleVideoRecorded}
           onSkip={handleSkipVideo}
+          cameraReady={cameraReady}
         />
       )}
     </View>
@@ -641,6 +929,20 @@ const styles = StyleSheet.create({
   idleHalftone: { position: 'absolute', bottom: 0, right: 0, width: 180, height: 180, flexDirection: 'row', flexWrap: 'wrap', gap: 10, padding: 12, opacity: 0.06 },
   idleHalftoneDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.primary },
   idleInner: { flex: 1, padding: spacing.md, justifyContent: 'center' },
+  eventBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+    backgroundColor: '#1a1400',
+    borderWidth: borders.thin, borderColor: colors.gold,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  eventBannerText: {
+    flex: 1, color: colors.white,
+    fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black,
+    letterSpacing: typography.letterSpacing.wide,
+  },
+  eventBannerXp: { backgroundColor: colors.gold, paddingHorizontal: spacing.xs, paddingVertical: 2 },
+  eventBannerXpText: { color: colors.background, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
   idleRankRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.lg },
   idleRankChip: { borderWidth: borders.thin, paddingHorizontal: spacing.sm, paddingVertical: 3 },
   idleRankChipText: { fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
@@ -660,8 +962,40 @@ const styles = StyleSheet.create({
   idleXpRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4, marginBottom: spacing.lg, backgroundColor: colors.surface, borderWidth: borders.thin, borderColor: colors.border, padding: spacing.sm },
   idleXpText: { color: colors.inactive, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
   idleXpValue: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
+  duelBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+    backgroundColor: '#1a0000',
+    borderWidth: borders.thin, borderColor: colors.primary,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+    marginBottom: spacing.sm,
+  },
+  duelBannerText: {
+    flex: 1, color: colors.white,
+    fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black,
+    letterSpacing: typography.letterSpacing.wide,
+  },
+  duelBannerActive: { backgroundColor: colors.primary, paddingHorizontal: spacing.xs, paddingVertical: 2 },
+  duelBannerActiveText: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
+  duelBannerSubmitted: { backgroundColor: colors.success, paddingHorizontal: spacing.xs, paddingVertical: 2 },
+  duelBannerSubmittedText: { color: colors.background, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
+  duelSubmittedBtn: { borderWidth: borders.medium, borderColor: colors.success, paddingVertical: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
+  duelSubmittedBtnText: { color: colors.success, fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
   startBtn: { backgroundColor: colors.primary, borderWidth: borders.medium, borderColor: '#000', paddingVertical: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
   startBtnText: { color: colors.white, fontSize: typography.fontSize.lg, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  inspireBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+    backgroundColor: '#0a0a00',
+    borderWidth: borders.thin, borderColor: colors.accent,
+    paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+    marginBottom: spacing.sm,
+  },
+  inspireBannerText: {
+    flex: 1, color: colors.white,
+    fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black,
+    letterSpacing: typography.letterSpacing.wide,
+  },
+  inspireBannerXp: { backgroundColor: colors.accent, paddingHorizontal: spacing.xs, paddingVertical: 2 },
+  inspireBannerXpText: { color: colors.background, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black },
 
   // ── Session + Video (shared camera container) ──────
   sessionContainer: { flex: 1, backgroundColor: '#000' },
@@ -737,6 +1071,7 @@ const styles = StyleSheet.create({
   // Record button
   videoRecordRing: { width: 88, height: 88, borderRadius: 44, borderWidth: 4, borderColor: colors.white, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.sm },
   videoRecordRingActive: { borderColor: colors.primary },
+  videoRecordRingWaiting: { borderColor: 'rgba(255,255,255,0.3)', opacity: 0.7 },
   videoRecordIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.primary },
   videoStopIcon: { width: 28, height: 28, borderRadius: 4, backgroundColor: colors.white },
   videoHint: { color: 'rgba(255,255,255,0.6)', fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider, marginBottom: spacing.md },
@@ -767,7 +1102,8 @@ const styles = StyleSheet.create({
   reviewVideoFrame: { borderColor: colors.primary },
   reviewVideoStripes: { position: 'absolute', top: -20, left: -20, right: -20, bottom: -20, flexDirection: 'row', gap: 12, transform: [{ rotate: '-20deg' }] },
   reviewVideoStripe: { width: 10, flex: 1, backgroundColor: colors.primary, opacity: 0.08 },
-  reviewNoVideoFrame: { borderColor: colors.border, borderStyle: 'dashed', opacity: 0.4 },
+  reviewNoVideoFrame: { borderColor: colors.inactive, borderStyle: 'dashed' },
+  reviewRetakeLabel: { color: colors.inactive, fontSize: 7, fontWeight: typography.fontWeight.black, letterSpacing: 0.5, textAlign: 'center', marginTop: 4 },
 
   reviewStats: { flexDirection: 'row', borderWidth: borders.thin, borderColor: colors.border, marginBottom: spacing.md },
   reviewStat: { flex: 1, alignItems: 'center', padding: spacing.sm, gap: 2 },
@@ -776,11 +1112,23 @@ const styles = StyleSheet.create({
   reviewStatDivider: { width: borders.thin, backgroundColor: colors.border },
   reviewVerifyDot: { width: 10, height: 10, borderRadius: 5 },
 
+  dishInput: { borderWidth: borders.thin, borderColor: colors.border, backgroundColor: colors.surface, color: colors.white, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.sm },
+  captionInput: { borderWidth: borders.thin, borderColor: colors.accent, backgroundColor: colors.surface, color: colors.white, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.sm },
   reviewVerification: { borderWidth: borders.thin, borderColor: colors.border, padding: spacing.sm, marginBottom: spacing.lg, gap: spacing.sm },
   reviewVerifyRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   reviewVerifyText: { flex: 1, color: colors.inactive, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
   reviewVerifyStatus: { color: colors.gold, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
 
+  ingredientsSection: { marginBottom: spacing.sm, borderWidth: borders.thin, borderColor: colors.border, backgroundColor: colors.surface },
+  ingredientsSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderBottomWidth: borders.thin, borderColor: colors.border },
+  ingredientsSectionTitle: { color: colors.white, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
+  ingredientsSectionOptional: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.bold },
+  ingredientItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: 6, borderBottomWidth: borders.thin, borderColor: colors.border },
+  ingredientBullet: { color: colors.accent, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black },
+  ingredientItemText: { flex: 1, color: colors.white, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold },
+  ingredientInputRow: { flexDirection: 'row', alignItems: 'center' },
+  ingredientInput: { flex: 1, color: colors.white, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.bold, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
+  ingredientAddBtn: { backgroundColor: colors.accent, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   shareBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.primary, borderWidth: borders.thin, borderColor: '#000', paddingVertical: spacing.md, marginBottom: spacing.sm },
   shareBtnText: { color: colors.white, fontSize: typography.fontSize.md, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
   discardBtn: { alignItems: 'center', paddingVertical: spacing.sm },

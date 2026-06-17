@@ -20,7 +20,7 @@ export default function App() {
         setShowOnboarding(done !== 'true');
       }
       setReady(true);
-    });
+    }).catch(() => setReady(true));
 
     // Listen for auth state changes (sign in / sign out)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, s) => {
@@ -52,7 +52,7 @@ export default function App() {
 
   return (
     <>
-      <Navigation />
+      <Navigation key={session.user.id} />
       <StatusBar style="light" />
     </>
   );
