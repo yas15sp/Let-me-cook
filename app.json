@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "let-me-cook",
+    "name": "Let Me Cook!",
     "slug": "let-me-cook",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -13,10 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.letmecook.app"
+      "supportsTablet": false,
+      "bundleIdentifier": "com.yasan.letmecook"
     },
     "android": {
+      "package": "com.yasan.letmecook",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
