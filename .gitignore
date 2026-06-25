@@ -34,7 +34,6 @@ yarn-error.*
 .env*.local
 
 # Supabase credentials
-src/lib/supabase.js
 
 # typescript
 *.tsbuildinfo
