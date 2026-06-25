@@ -23,7 +23,6 @@ const STAGE_HINTS = [
 ];
 
 const BOOSTS = [
-  { label: 'SELFIE', xp: 15, icon: 'camera-reverse' },
   { label: 'CAPTION', xp: 10, icon: 'text' },
 ];
 
@@ -236,8 +235,8 @@ function IdleScreen({ onStart, eventTitle, eventXpReward, duelOpponentName, duel
           <Ionicons name="star" size={12} color={colors.accent} />
           <Text style={styles.idleXpText}>Base cook earns</Text>
           <Text style={styles.idleXpValue}>+120 XP</Text>
-          <Text style={styles.idleXpText}>· boosts</Text>
-          <Text style={styles.idleXpValue}>+25 XP</Text>
+          <Text style={styles.idleXpText}>· caption boost</Text>
+          <Text style={styles.idleXpValue}>+10 XP</Text>
           <Text style={styles.idleXpText}>· video clip</Text>
           <Text style={styles.idleXpValue}>+30 XP</Text>
         </View>
@@ -563,8 +562,6 @@ export default function CookScreen({ navigation }) {
   const [captures, setCaptures] = useState([null, null, null]);
   const [activeBoosts, setActiveBoosts] = useState([]);
   const [videoUri, setVideoUri] = useState(null);
-  const [facing, setFacing] = useState('back');
-  const [takingSelfie, setTakingSelfie] = useState(false);
   const [dishName, setDishName] = useState('');
   const [caption, setCaption] = useState('');
   const [sharing, setSharing] = useState(false);
@@ -626,12 +623,6 @@ export default function CookScreen({ navigation }) {
     animateShutter();
     const photo = await cameraRef.current?.takePictureAsync({ quality: 0.8 });
     if (!photo?.uri) return; // camera not ready — let user tap again
-    if (takingSelfie) {
-      setTakingSelfie(false);
-      setFacing('back');
-      setActiveBoosts(prev => prev.includes('SELFIE') ? prev : [...prev, 'SELFIE']);
-      return;
-    }
     const next = captures.map((c, i) => i === stage ? photo.uri : c);
     setCaptures(next);
     if (stage < 2) {
@@ -646,20 +637,6 @@ export default function CookScreen({ navigation }) {
         toValue: 0, duration: 400, delay: 200, useNativeDriver: true,
       }).start();
     }
-  };
-
-  const handleSelfieBoostPress = () => {
-    if (activeBoosts.includes('SELFIE')) {
-      setActiveBoosts(prev => prev.filter(b => b !== 'SELFIE'));
-    } else {
-      setFacing('front');
-      setTakingSelfie(true);
-    }
-  };
-
-  const handleCancelSelfie = () => {
-    setTakingSelfie(false);
-    setFacing('back');
   };
 
   const handleVideoRecorded = (uri) => {
@@ -693,8 +670,6 @@ export default function CookScreen({ navigation }) {
     setCaptures([null, null, null]);
     setActiveBoosts([]);
     setVideoUri(null);
-    setFacing('back');
-    setTakingSelfie(false);
     setDishName('');
     setCaption('');
     setIngredients([]);
@@ -805,7 +780,7 @@ export default function CookScreen({ navigation }) {
         key={phase === 'video' ? 'video-mode' : 'picture-mode'}
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
-        facing={facing}
+        facing="back"
         mode={cameraMode}
         onCameraReady={() => setCameraReady(true)}
       />
@@ -822,83 +797,56 @@ export default function CookScreen({ navigation }) {
 
           {/* Top HUD */}
           <View style={[styles.topHud, { top: insets.top + spacing.md }]}>
-            <TouchableOpacity style={styles.exitBtn} onPress={takingSelfie ? handleCancelSelfie : handleDiscard}>
-              <Ionicons name={takingSelfie ? 'arrow-back' : 'close'} size={20} color={colors.white} />
+            <TouchableOpacity style={styles.exitBtn} onPress={handleDiscard}>
+              <Ionicons name="close" size={20} color={colors.white} />
             </TouchableOpacity>
             <View style={styles.timerBox}>
               <Text style={styles.timerText}>{stopwatch.display}</Text>
             </View>
-            {takingSelfie ? (
-              <View style={[styles.selfieHudBadge]}>
-                <Ionicons name="camera-reverse" size={14} color={colors.accent} />
-                <Text style={styles.selfieHudText}>FRONT</Text>
-              </View>
-            ) : (
-              <View style={styles.stageIndicator}>
-                {STAGES.map((s, i) => (
-                  <View key={s} style={[styles.stageDot, i === stage && styles.stageDotActive, i < stage && styles.stageDotDone]} />
-                ))}
-              </View>
-            )}
+            <View style={styles.stageIndicator}>
+              {STAGES.map((s, i) => (
+                <View key={s} style={[styles.stageDot, i === stage && styles.stageDotActive, i < stage && styles.stageDotDone]} />
+              ))}
+            </View>
           </View>
 
-          {/* Stage / selfie label */}
+          {/* Stage label */}
           <View style={[styles.stageLabelBox, { top: insets.top + 70 }]}>
-            {takingSelfie ? (
-              <>
-                <View style={styles.selfiePill}>
-                  <Ionicons name="camera-reverse" size={12} color={colors.background} />
-                  <Text style={styles.selfiePillText}>SELFIE BOOST</Text>
-                </View>
-                <Text style={styles.stageHintText}>Strike a pose · +15 XP</Text>
-              </>
-            ) : (
-              <>
-                <View style={styles.stagePill}>
-                  <Text style={styles.stagePillText}>{STAGES[stage]}</Text>
-                </View>
-                <Text style={styles.stageHintText}>{STAGE_HINTS[stage]}</Text>
-              </>
-            )}
+            <View style={styles.stagePill}>
+              <Text style={styles.stagePillText}>{STAGES[stage]}</Text>
+            </View>
+            <Text style={styles.stageHintText}>{STAGE_HINTS[stage]}</Text>
           </View>
 
           {/* Bottom controls */}
           <View style={[styles.bottomControls, { paddingBottom: insets.bottom + spacing.md }]}>
-            {/* Boost strip — hidden during selfie */}
-            {!takingSelfie && (
-              <View style={styles.boostStrip}>
-                {BOOSTS.map(b => {
-                  const active = activeBoosts.includes(b.label);
-                  const isSelfie = b.label === 'SELFIE';
-                  return (
-                    <TouchableOpacity
-                      key={b.label}
-                      style={[styles.boostBtn, active && styles.boostBtnActive]}
-                      onPress={isSelfie ? handleSelfieBoostPress : () => toggleBoost(b.label)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name={b.icon} size={14} color={active ? colors.background : colors.accent} />
-                      <Text style={[styles.boostLabel, active && { color: colors.background }]}>{b.label}</Text>
-                      <Text style={[styles.boostXP, active && { color: colors.background }]}>+{b.xp} XP</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
+            <View style={styles.boostStrip}>
+              {BOOSTS.map(b => {
+                const active = activeBoosts.includes(b.label);
+                return (
+                  <TouchableOpacity
+                    key={b.label}
+                    style={[styles.boostBtn, active && styles.boostBtnActive]}
+                    onPress={() => toggleBoost(b.label)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name={b.icon} size={14} color={active ? colors.background : colors.accent} />
+                    <Text style={[styles.boostLabel, active && { color: colors.background }]}>{b.label}</Text>
+                    <Text style={[styles.boostXP, active && { color: colors.background }]}>+{b.xp} XP</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
 
             <View style={styles.captureRow}>
-              {takingSelfie ? (
-                <View style={styles.captureRowSpacer} />
-              ) : (
-                <PhotoStrip captures={captures} />
-              )}
+              <PhotoStrip captures={captures} />
               <Animated.View style={{ transform: [{ scale: shutterScale }] }}>
                 <TouchableOpacity
-                  style={[styles.shutterBtn, takingSelfie && styles.shutterBtnSelfie]}
+                  style={styles.shutterBtn}
                   onPress={handleCapture}
                   activeOpacity={1}
                 >
-                  <View style={[styles.shutterInner, takingSelfie && styles.shutterInnerSelfie]} />
+                  <View style={styles.shutterInner} />
                 </TouchableOpacity>
               </Animated.View>
               <View style={styles.captureRowSpacer} />
@@ -1016,14 +964,6 @@ const styles = StyleSheet.create({
   stageDot: { width: 8, height: 8, backgroundColor: colors.inactive },
   stageDotActive: { backgroundColor: colors.accent, width: 20 },
   stageDotDone: { backgroundColor: colors.success },
-
-  // Selfie HUD
-  selfieHudBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: borders.thin, borderColor: colors.accent, paddingHorizontal: spacing.sm, paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.6)' },
-  selfieHudText: { color: colors.accent, fontSize: typography.fontSize.xs, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wide },
-  selfiePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.accent, paddingHorizontal: spacing.md, paddingVertical: spacing.xs },
-  selfiePillText: { color: colors.background, fontSize: typography.fontSize.sm, fontWeight: typography.fontWeight.black, letterSpacing: typography.letterSpacing.wider },
-  shutterBtnSelfie: { borderColor: colors.accent },
-  shutterInnerSelfie: { backgroundColor: colors.accent },
 
   // Stage label
   stageLabelBox: { position: 'absolute', left: spacing.md, right: spacing.md, alignItems: 'center', gap: spacing.xs },

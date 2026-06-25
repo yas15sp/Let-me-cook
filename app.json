@@ -14,7 +14,10 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.yasan.letmecook"
+      "bundleIdentifier": "com.yasan.letmecook",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.yasan.letmecook",
@@ -29,6 +32,12 @@
     },
     "plugins": [
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "be106e67-9f3d-4318-9ed8-7099024e198d"
+      }
+    },
+    "owner": "yas15sp"
   }
 }
